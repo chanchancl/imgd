@@ -1,6 +1,14 @@
 
+from rich.progress import (
+    TextColumn,
+    SpinnerColumn,
+    BarColumn,
+    Progress,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+    MofNCompleteColumn,
+)
 import re
-import math
 import json
 import aiohttp
 import asyncio
@@ -17,11 +25,12 @@ from bs4 import BeautifulSoup as bs
 
 import infos
 import utils
+from reduction import ReductionImage
 
 endpoint = infos.Endpoint
 header = utils.BuildHeaderFromStr(infos.HeaderStr)
 
-
+# 代理地址
 ProxyAddress = infos.ProxyAddress
 # 下载目录
 DOWNLOAD_DIR = infos.DownloadDir
@@ -41,16 +50,6 @@ BeginOfReductionID = 226784
 
 LogFilePath = infos.LogFilePath
 
-from rich.progress import (
-    TextColumn,
-    SpinnerColumn,
-    BarColumn,
-    Progress,
-    TimeElapsedColumn,
-    TimeRemainingColumn,
-    MofNCompleteColumn,
-)
-
 progress = Progress(
     SpinnerColumn(),
     TextColumn("[bold blue]Downloading...", justify="right"),
@@ -61,40 +60,27 @@ progress = Progress(
 )
 
 
+def AsyncWrapper(func):
+    @functools.wraps(func)
+    async def _wrapper(*args, **kwargs):
+        loop = asyncio.get_running_loop()
+        pfunc = functools.partial(func, *args, **kwargs)
+        result = await loop.run_in_executor(None, pfunc)
+        return result
 
-def getNum(e: str, t: str):
-    a = 10
-    if int(e) >= 268850:
+    return _wrapper
+
+
+def HashPageColumnNumber(comicID: str, pageID: str):
+    column = 10
+    if int(comicID) >= 268850:
         # 在这之后采用新的加密方法
-        n = f"{e}{t}"
+        n = f"{comicID}{pageID}"
         hs = hashlib.md5()
         hs.update(n.encode())
         n = ord(hs.hexdigest()[-1]) % 10
-        a = [2, 4, 6, 8, 10, 12, 14, 16, 18, 20][n]
-    return a
-
-
-def ReductionImage(image: Image.Image, num: int) -> Image.Image:
-    # create a same (mode, size) image
-    newImage = Image.new(image.mode, image.size)
-    width, height = image.size
-    ph = math.floor(height / num)
-
-    for i in range(num):
-        rawX = 0
-        rawY = (num - i - 1) * ph
-        newX = 0
-        newY = i * ph
-        newDiff = 0
-        if i == 0:
-            # fill the first diff block
-            rawDiff = height - (rawY + ph)
-        else:
-            newDiff = rawDiff
-        newImage.paste(image.crop(
-            (rawX, rawY, width, rawY + ph + rawDiff)),
-            (newX, newY + newDiff))
-    return newImage
+        column = [2, 4, 6, 8, 10, 12, 14, 16, 18, 20][n]
+    return column
 
 
 async def get(session: aiohttp.ClientSession, url: str, *args, **kwargs) -> bytes:
@@ -123,7 +109,9 @@ async def get(session: aiohttp.ClientSession, url: str, *args, **kwargs) -> byte
     print(f"All retry are failed, {MaxRetry} times")
 
 
+# 所有的worker，在操作队列时，需要加锁
 lock = asyncio.Lock()
+
 
 async def Worker(workerID: int, path: str, comicID: str, queue: list, session: aiohttp.ClientSession, progressTask):
     count = 0
@@ -137,18 +125,23 @@ async def Worker(workerID: int, path: str, comicID: str, queue: list, session: a
         finally:
             lock.release()
 
+        # 计数
         count += 1
         fileName = photo['id']
         imageURL = photo.img['data-original']
         dest = path.joinpath(fileName)
 
+        # 打印部分下载状态
         if count % 7 == 1:
             progress.console.print(f"Worker {workerID}")
             progress.console.print(fileName, imageURL)
             progress.console.print(dest)
+
+        # 文件存在时，是否重新下载
         if not ReDownload and dest.exists():
             continue
-        
+
+        # 获取资源，如果失败则把task放回队列
         try:
             rsp = await get(session, imageURL, headers=header, proxy=ProxyAddress)
         except Exception:
@@ -158,20 +151,21 @@ async def Worker(workerID: int, path: str, comicID: str, queue: list, session: a
                 queue.append(photo)
             continue
 
+        # 处理图片
         img = Image.open(BytesIO(rsp))
-        # img.save(dest)
         newimg = img
         if Reduction and int(comicID) >= BeginOfReductionID:
-            num = getNum(comicID, fileName.split('.')[0])
-            newimg = ReductionImage(img, num)
+            column = HashPageColumnNumber(comicID, fileName.split('.')[0])
+            await AsyncWrapper(ReductionImage)(img, column)
 
-        # Image.save is a sync method, so make it async
-        save = functools.partial(newimg.save, dest)
-        await asyncio.get_event_loop().run_in_executor(None, save)
+        # 异步IO保存图片 Image.save is a sync method, so make it async
+        await AsyncWrapper(newimg.save)(dest)
 
+        # 更新进度条
         async with lock:
             progress.update(progressTask, advance=1)
 
+        # 休眠
         await asyncio.sleep(DefaultSleepTime)
     progress.console.print(f"Worker {workerID} is done! Do {count} works")
     return count
@@ -184,12 +178,15 @@ async def Download(url: str, dest: pathlib.Path, info: dict = None):
     comicID = url.rsplit('/')[-1]
     with progress:
         async with aiohttp.ClientSession() as session:
+            # 尝试获取资源
             try:
                 rsp = await get(session, url, headers=header, proxy=ProxyAddress)
             except Exception:
-                print(f"Failed to download web page {url}, Please check network config")
+                print(
+                    f"Failed to download web page {url}, Please check network config")
                 exit()
 
+            # 从页面获取所有目标资源地址，打包进 photos
             soup = bs(rsp, "html.parser")
             try:
                 a = soup.find('div', class_='panel-body')
@@ -198,19 +195,25 @@ async def Download(url: str, dest: pathlib.Path, info: dict = None):
             except Exception as e:
                 print(f"Failed to parse html in {url}, with exception : {e}")
                 exit()
+
             allWork = len(photos)
 
+            # 取标题，并进行非法字符的删除
             panel = soup.find('div', class_='panel-heading')
             title = panel.find('div', class_='pull-left').text.strip()
             title = re.sub('[\\/:*?"<>|]', '', title)
             title = title.strip()
 
+            # 路径计算
             basePath = pathlib.Path(dest)
             path = basePath.joinpath(title)
-
             path.mkdir(parents=True, exist_ok=True)
+
+            # 打印标题与路径
             progress.console.print(title)
             progress.console.print(path)
+
+            # 记录日志
             if info is not None:
                 info.setdefault("comics", [])
                 info['comics'].append({
@@ -221,15 +224,19 @@ async def Download(url: str, dest: pathlib.Path, info: dict = None):
                 })
                 info['threads'] = WORKER_NUM
 
+            # 创建 WORKER_NUM 个task，从同一个list中取task，直到list为空
             tasks = []  # coroutine task
+            # 创建进度条
             progressTask = progress.add_task("total", total=len(photos))
             for i in range(WORKER_NUM):
                 tasks.append(asyncio.create_task(
                     Worker(i, path, comicID, photos, session, progressTask)))
 
+            # 等待并统计完成的工作数量
             done = sum(await asyncio.gather(*tasks))
 
             progress.console.print(f"All worker are done, {done}/{allWork}")
+            # 删除进度条
             progress.remove_task(progressTask)
     return
 
