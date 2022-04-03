@@ -153,13 +153,12 @@ async def Worker(workerID: int, path: str, comicID: str, queue: list, session: a
 
         # 处理图片
         img = Image.open(BytesIO(rsp))
-        newimg = img
         if Reduction and int(comicID) >= BeginOfReductionID:
             column = HashPageColumnNumber(comicID, fileName.split('.')[0])
-            await AsyncWrapper(ReductionImage)(img, column)
+            img = await AsyncWrapper(ReductionImage)(img, column)
 
         # 异步IO保存图片 Image.save is a sync method, so make it async
-        await AsyncWrapper(newimg.save)(dest)
+        await AsyncWrapper(img.save)(dest)
 
         # 更新进度条
         async with lock:
@@ -214,15 +213,15 @@ async def Download(url: str, dest: pathlib.Path, info: dict = None):
             progress.console.print(path)
 
             # 记录日志
-            if info is not None:
-                info.setdefault("comics", [])
-                info['comics'].append({
-                    'title': title,
-                    'path': str(path),
-                    'url': url,
-                    'page': len(photos),
-                })
-                info['threads'] = WORKER_NUM
+            # if info is not None:
+            #     info.setdefault("comics", [])
+            #     info['comics'].append({
+            #         'title': title,
+            #         'path': str(path),
+            #         'url': url,
+            #         'page': len(photos),
+            #     })
+            #     info['threads'] = WORKER_NUM
 
             # 创建 WORKER_NUM 个task，从同一个list中取task，直到list为空
             tasks = []  # coroutine task
@@ -267,7 +266,13 @@ async def SaveLog(informations):
         for info in informations:
             if info == infos.EmptyInfo:
                 continue
-            await f.write(json.dumps(info, ensure_ascii=False, indent=2) + "\n")
+            comicIDs = [x for x in info['comicIds'].strip().split(' ')
+                        if x != ""]
+            albumIDs = [x for x in info['albumPages'].strip().split(' ')
+                        if x != ""]
+            if len(comicIDs) == 0 and len(albumIDs) == 0:
+                continue
+            await f.write(json.dumps(info, ensure_ascii=False) + "\n")
 
 
 async def main():
@@ -278,8 +283,17 @@ async def main():
         info['time'] = datetime.now().strftime("%Y.%m.%d %T")
         comicIDs = [x for x in info['comicIds'].strip().split(' ') if x != ""]
         dest = pathlib.Path(DOWNLOAD_DIR)
+
         if info['subDir'] != "":
-            dest = dest.joinpath(info['subDir'])
+            tmp = dest.joinpath(info['subDir'])
+            if not tmp.exists():
+                for it in dest.iterdir():
+                    if it.is_dir() and it.name.startswith(info['subDir']):
+                        dest = it
+                        print(f"Redirect dest path to {dest}")
+                        continue
+            else:
+                dest = tmp
         print(f"Comic list : {comicIDs}")
         print(f"Destination dir : {dest}")
 
