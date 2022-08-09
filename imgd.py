@@ -15,6 +15,7 @@ import asyncio
 import hashlib
 import pathlib
 import aiofiles
+import traceback
 import functools
 
 from PIL import Image
@@ -46,7 +47,7 @@ ReDownload = infos.ReDownload
 DownloadInfo = infos.DownloadInfo
 
 DefaultSleepTime = 0.1
-BeginOfReductionID = 226784
+BeginOfReductionID = 223301
 
 LogFilePath = infos.LogFilePath
 
@@ -88,23 +89,27 @@ async def get(session: aiohttp.ClientSession, url: str, *args, **kwargs) -> byte
     retry = 0
     sleepTime = DefaultSleepTime
     while retry < MaxRetry:
+        # if retry >= MaxRetry // 2:
+        #     sleepTime = DefaultSleepTime * 2
         retry += 1
-        if retry >= MaxRetry // 2:
-            sleepTime = DefaultSleepTime * 2
         ret = None
         try:
             async with session.get(url, *args, **kwargs) as rsp:
                 if rsp.status == 200:
                     ret = await rsp.read()
                     return ret
-        except Exception as e:
+        except KeyboardInterrupt as e:
+            loop = asyncio.get_event_loop()
+            print(f"Get input from keyboard, will exit {e}")
+            loop.close()
+            return
+        except aiohttp.ClientError as e:
             print(f"Exception is raised {e} when connecting {url}")
             if retry == MaxRetry:
                 raise  # raise out
             await asyncio.sleep(sleepTime)
-        finally:
-            if ret is None:
-                print(f"Failed with {retry} times")
+        if ret is None:
+            print(f"Failed with {retry} times")
 
     print(f"All retry are failed, {MaxRetry} times")
 
@@ -121,14 +126,14 @@ async def Worker(workerID: int, path: str, comicID: str, queue: list, session: a
         try:
             if len(queue) == 0:
                 break
-            photo = queue.pop()
+            work = queue.pop()
         finally:
             lock.release()
 
         # 计数
         count += 1
-        fileName = photo['id']
-        imageURL = photo.img['data-original']
+        fileName = work['id']
+        imageURL = work['url']
         dest = path.joinpath(fileName)
 
         # 打印部分下载状态
@@ -148,7 +153,7 @@ async def Worker(workerID: int, path: str, comicID: str, queue: list, session: a
             # retry, but failed
             async with lock:
                 # put work to queue again
-                queue.append(photo)
+                queue.append(work)
             continue
 
         # 处理图片
@@ -175,65 +180,75 @@ async def Download(url: str, dest: pathlib.Path, info: dict = None):
     # getTitle
     # getPageRange
     comicID = url.rsplit('/')[-1]
+    nextPageURL = url
     with progress:
         async with aiohttp.ClientSession() as session:
             # 尝试获取资源
-            try:
-                rsp = await get(session, url, headers=header, proxy=ProxyAddress)
-            except Exception:
-                print(
-                    f"Failed to download web page {url}, Please check network config")
-                exit()
+            allWork = 0
+            works = []
 
-            # 从页面获取所有目标资源地址，打包进 photos
-            soup = bs(rsp, "html.parser")
-            try:
-                a = soup.find('div', class_='panel-body')
-                photos = a.find_all('div', class_="center scramble-page")
-                photos.reverse()
-            except Exception as e:
-                print(f"Failed to parse html in {url}, with exception : {e}")
-                exit()
+            # 循环遍历所有page，将所有工作添加至 works
+            while nextPageURL is not None:
+                url = nextPageURL
+                nextPageURL = None
+                try:
+                    rsp = await get(session, url, headers=header, proxy=ProxyAddress)
+                except Exception:
+                    print(
+                        f"Failed to download web page {url}, Please check network config")
+                    exit()
 
-            allWork = len(photos)
+                # 从页面获取所有目标资源地址，打包进 works
+                soup = bs(rsp, "html.parser")
+                try:
+                    a = soup.find('div', class_='panel-body')
+                    photos = a.find_all('div', class_="center scramble-page")
+                    photos.reverse()
+                except Exception as e:
+                    print(f"Failed to parse html in {url}, with exception : {e}")
+                    print(traceback.format_exc())
+                    exit()
 
-            # 取标题，并进行非法字符的删除
-            panel = soup.find('div', class_='panel-heading')
-            title = panel.find('div', class_='pull-left').text.strip()
-            title = re.sub('[\\/:*?"<>|]', '', title)
-            title = title.strip()
+                works.extend(
+                    [{
+                        "id": x["id"],
+                        "url": x.img['data-original']
+                    } for x in photos]
+                )
 
-            # 路径计算
-            basePath = pathlib.Path(dest)
-            path = basePath.joinpath(title)
-            path.mkdir(parents=True, exist_ok=True)
+                # 取标题，并进行非法字符的删除
+                panel = soup.find('div', class_='panel-heading')
+                title = panel.find('div', class_='pull-left').text.strip()
+                title = re.sub('[\\/:*?"<>|\n]', '', title)
+                title = title.strip()
 
-            # 打印标题与路径
-            progress.console.print(title)
-            progress.console.print(path)
+                # 路径计算
+                basePath = pathlib.Path(dest)
+                path = basePath.joinpath(title)
+                path.mkdir(parents=True, exist_ok=True)
 
-            # 记录日志
-            # if info is not None:
-            #     info.setdefault("comics", [])
-            #     info['comics'].append({
-            #         'title': title,
-            #         'path': str(path),
-            #         'url': url,
-            #         'page': len(photos),
-            #     })
-            #     info['threads'] = WORKER_NUM
+                # 打印标题与路径
+                progress.console.print(title)
+                progress.console.print(path)
 
+                # 尝试寻找下一页
+                nextPage = soup.find('a', class_='prevnext')
+                if nextPage is not None:
+                    nextPageURL = nextPage['href']
+
+            # 创建进度条
+            progressTask = progress.add_task("total", total=len(works))
             # 创建 WORKER_NUM 个task，从同一个list中取task，直到list为空
             tasks = []  # coroutine task
-            # 创建进度条
-            progressTask = progress.add_task("total", total=len(photos))
+            copyWorks = works.copy()
             for i in range(WORKER_NUM):
                 tasks.append(asyncio.create_task(
-                    Worker(i, path, comicID, photos, session, progressTask)))
+                    Worker(i, path, comicID, copyWorks, session, progressTask)))
 
             # 等待并统计完成的工作数量
             done = sum(await asyncio.gather(*tasks))
 
+            allWork += len(works)
             progress.console.print(f"All worker are done, {done}/{allWork}")
             # 删除进度条
             progress.remove_task(progressTask)
@@ -253,7 +268,7 @@ async def GetAllComicIdFromAlbum(albumID: str, dest: pathlib.Path, info: dict = 
         idList.append(comicID)
 
     title = soup.title.text
-    title = re.sub('[\\/:*?"<>|]', '', title)
+    title = re.sub('[\\/:*?"<>|\n]', '', title)
     newdir = dest.joinpath(title)
 
     for comicID in idList:
@@ -285,15 +300,18 @@ async def main():
         dest = pathlib.Path(DOWNLOAD_DIR)
 
         if info['subDir'] != "":
-            tmp = dest.joinpath(info['subDir'])
-            if not tmp.exists():
+            perfectMatchPath = dest.joinpath(info['subDir'])
+            if perfectMatchPath.exists():
+                dest = perfectMatchPath
+            else:
+                prefixMatchPath = perfectMatchPath   # default value, if prefixMatch is None
                 for it in dest.iterdir():
                     if it.is_dir() and it.name.startswith(info['subDir']):
-                        dest = it
+                        prefixMatchPath = it
                         print(f"Redirect dest path to {dest}")
-                        continue
-            else:
-                dest = tmp
+                        break
+                dest = prefixMatchPath
+
         print(f"Comic list : {comicIDs}")
         print(f"Destination dir : {dest}")
 

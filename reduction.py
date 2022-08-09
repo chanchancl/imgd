@@ -30,7 +30,7 @@ def ReductionImage(image: Image.Image, column: int) -> Image.Image:
     column3 [9,  12)     height 3
             line 12      we lost it
 
-    Inorder not lost the line 12, we have to modify column3 to [9,  12)
+    In order to not lost the line 12, we have to modify column3 to [9,  12)
     then we can put column3 to the first column in new image
     newColumnN contains lines between [0 + N * columnHeight, 0 + (N + 1) * columnHeight)
 
@@ -54,16 +54,16 @@ def ReductionImage(image: Image.Image, column: int) -> Image.Image:
     # print(height, columnHeight, mod)
 
     for i in range(column):
-        N = column - i - 1
+        N = column - i - 1   # [column-1, ..., 2, 1, 0]
         rawYstart = N * columnHeight
         rawYend = rawYstart + columnHeight
-        if N == column - 1:  # last column in raw
+        if N == column - 1:  # last column in raw (first iteration)
             rawYend += mod
 
         N = i
         newYstart = N * columnHeight + mod
         newYend = newYstart + columnHeight
-        if N == 0:
+        if N == 0:  # first column in new (first iteration)
             newYstart, newYend = 0, columnHeight + mod
     
         try:
