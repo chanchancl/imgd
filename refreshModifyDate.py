@@ -1,4 +1,6 @@
 
+from time import sleep
+from pprint import pprint
 from sys import argv
 from pathlib import Path
 import traceback
@@ -11,6 +13,7 @@ def RefreshFolder(inputPaths: List[Path]):
         if dir.is_dir():
             dest = dir.joinpath("tmptest")
             dest.mkdir(exist_ok=True)
+            sleep(0.1)
             dest.rmdir()
             print(f"Done on {dir}")
 
@@ -20,6 +23,7 @@ def main():
         exit(0)
 
     inputPaths = [Path(x) for x in argv[1:]]
+    # pprint(inputPaths)
 
     RefreshFolder(inputPaths)
 
@@ -30,4 +34,4 @@ if __name__ == "__main__":
         main()
     except Exception:
         print(traceback.format_exc())
-    input()
+    # input()

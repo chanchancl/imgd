@@ -1,5 +1,6 @@
 
 from rich.progress import (
+    get_console,
     TextColumn,
     SpinnerColumn,
     BarColumn,
@@ -15,7 +16,6 @@ import asyncio
 import hashlib
 import pathlib
 import aiofiles
-import traceback
 import functools
 
 from PIL import Image
@@ -40,7 +40,7 @@ WORKER_NUM = infos.WorkerThreadNum
 # 是否对图像进行修复
 Reduction = infos.Reduction
 # 若文件已经存在，是否重新下载并覆盖
-ReDownload = infos.ReDownload
+ForceDownloadIfExist = infos.ReDownload
 # 漫画ID，使用' '分隔
 # 有若干章节的漫画，填到这里，用' '分隔
 # 下载目录的子目录，为空的话则不创建
@@ -62,7 +62,7 @@ progress = Progress(
 
 
 def AsyncWrapper(func):
-    @functools.wraps(func)
+    @functools.wraps(func)  # 用于保留被包装函数的函数名，文档等内容
     async def _wrapper(*args, **kwargs):
         loop = asyncio.get_running_loop()
         pfunc = functools.partial(func, *args, **kwargs)
@@ -84,13 +84,19 @@ def HashPageColumnNumber(comicID: str, pageID: str):
     return column
 
 
+# 去除不合法的文件名字符
+def StripText(text: str) -> str:
+    return re.sub('[.\\/:*?"<>|\n]', '', text).strip()
+
+
 async def get(session: aiohttp.ClientSession, url: str, *args, **kwargs) -> bytes:
     MaxRetry = 10
     retry = 0
     sleepTime = DefaultSleepTime
+    # print(f"Download : {url}")
     while retry < MaxRetry:
-        # if retry >= MaxRetry // 2:
-        #     sleepTime = DefaultSleepTime * 2
+        if retry >= MaxRetry // 2:
+            sleepTime = sleepTime * 2
         retry += 1
         ret = None
         try:
@@ -98,14 +104,14 @@ async def get(session: aiohttp.ClientSession, url: str, *args, **kwargs) -> byte
                 if rsp.status == 200:
                     ret = await rsp.read()
                     return ret
-        except KeyboardInterrupt as e:
-            loop = asyncio.get_event_loop()
-            print(f"Get input from keyboard, will exit {e}")
-            loop.close()
-            return
+        except KeyboardInterrupt:
+            # 将key board 异常向上发送，使得外部可以退出，实际上只要不
+            # except Exception as e:  就没必要写这句，因为默认就会向外扔
+            raise
         except aiohttp.ClientError as e:
+            # 网络错误，尝试重试，如果超过MaxRetry次，则抛出异常
             print(f"Exception is raised {e} when connecting {url}")
-            if retry == MaxRetry:
+            if retry >= MaxRetry:
                 raise  # raise out
             await asyncio.sleep(sleepTime)
         if ret is None:
@@ -120,6 +126,7 @@ lock = asyncio.Lock()
 
 async def Worker(workerID: int, path: str, comicID: str, queue: list, session: aiohttp.ClientSession, progressTask):
     count = 0
+    # 所有的Worker都处于 progress 的有效作用域
     while True:
         # pop an work from queue
         await lock.acquire()
@@ -138,32 +145,40 @@ async def Worker(workerID: int, path: str, comicID: str, queue: list, session: a
 
         # 打印部分下载状态
         if count % 7 == 1:
-            progress.console.print(f"Worker {workerID}")
-            progress.console.print(fileName, imageURL)
-            progress.console.print(dest)
+            print(f"Worker {workerID}")
+            print(fileName, imageURL)
+            print(dest)
 
         # 文件存在时，是否重新下载
-        if not ReDownload and dest.exists():
+        if not ForceDownloadIfExist and dest.exists():
             continue
 
         # 获取资源，如果失败则把task放回队列
         try:
             rsp = await get(session, imageURL, headers=header, proxy=ProxyAddress)
+            # 处理图片
+            img = Image.open(BytesIO(rsp))
+            if Reduction and int(comicID) >= BeginOfReductionID:
+                column = HashPageColumnNumber(comicID, fileName.split('.')[0])
+                img = await AsyncWrapper(ReductionImage)(img, column)
+            # 异步IO保存图片 Image.save is a sync method, so make it async
+            await AsyncWrapper(img.save)(dest)
+        except KeyboardInterrupt as e:
+            # 下载过程中检测到 退出信号，则打印log并退出
+            print(f"Get input from keyboard, will exit {e}")
+            raise
         except Exception:
+            # 处理其余任何导致下载失败的异常
             # retry, but failed
+            if work['count'] > 3:
+                print(f"In worker {workerID}, Failed to download {imageURL} with retry")
+                progress.console.print_exception()
+                continue  # drop this task
+            work['count'] += 1
             async with lock:
                 # put work to queue again
                 queue.append(work)
             continue
-
-        # 处理图片
-        img = Image.open(BytesIO(rsp))
-        if Reduction and int(comicID) >= BeginOfReductionID:
-            column = HashPageColumnNumber(comicID, fileName.split('.')[0])
-            img = await AsyncWrapper(ReductionImage)(img, column)
-
-        # 异步IO保存图片 Image.save is a sync method, so make it async
-        await AsyncWrapper(img.save)(dest)
 
         # 更新进度条
         async with lock:
@@ -171,7 +186,7 @@ async def Worker(workerID: int, path: str, comicID: str, queue: list, session: a
 
         # 休眠
         await asyncio.sleep(DefaultSleepTime)
-    progress.console.print(f"Worker {workerID} is done! Do {count} works")
+    print(f"Worker {workerID} is done! Do {count} works")
     return count
 
 
@@ -181,77 +196,82 @@ async def Download(url: str, dest: pathlib.Path, info: dict = None):
     # getPageRange
     comicID = url.rsplit('/')[-1]
     nextPageURL = url
-    with progress:
-        async with aiohttp.ClientSession() as session:
-            # 尝试获取资源
-            allWork = 0
-            works = []
+    print(f"Start to download comic {comicID}")
 
-            # 循环遍历所有page，将所有工作添加至 works
-            while nextPageURL is not None:
-                url = nextPageURL
-                nextPageURL = None
-                try:
-                    rsp = await get(session, url, headers=header, proxy=ProxyAddress)
-                except Exception:
-                    print(
-                        f"Failed to download web page {url}, Please check network config")
-                    exit()
+    async with aiohttp.ClientSession() as session:
+        # 尝试获取资源
+        allWork = 0
+        works = []
 
-                # 从页面获取所有目标资源地址，打包进 works
-                soup = bs(rsp, "html.parser")
-                try:
-                    a = soup.find('div', class_='panel-body')
-                    photos = a.find_all('div', class_="center scramble-page")
-                    photos.reverse()
-                except Exception as e:
-                    print(f"Failed to parse html in {url}, with exception : {e}")
-                    print(traceback.format_exc())
-                    exit()
+        # 循环遍历所有page，将所有工作添加至 works
+        while nextPageURL is not None:
+            url = nextPageURL
+            nextPageURL = None
+            try:
+                rsp = await get(session, url, headers=header, proxy=ProxyAddress)
+            except Exception:
+                print(f"Failed to download web page {url}, Please check network config")
+                progress.console.print_exception()
+                exit()
 
-                works.extend(
-                    [{
-                        "id": x["id"],
-                        "url": x.img['data-original']
-                    } for x in photos]
-                )
+            # 从页面获取所有目标资源地址，打包进 works
+            soup = bs(rsp, "html.parser")
+            try:
+                a = soup.find('div', class_='panel-body')
+                photos = a.find_all('div', class_="center scramble-page")
+                photos.reverse()
+            except Exception as e:
+                print(f"Failed to parse html in {url}, with exception : {e}")
+                progress.console.print_exception()
+                # wait and retry here
+                nextPageURL = url
+                await asyncio.sleep(1)
+                continue
+                # exit()
 
-                # 取标题，并进行非法字符的删除
-                panel = soup.find('div', class_='panel-heading')
-                title = panel.find('div', class_='pull-left').text.strip()
-                title = re.sub('[\\/:*?"<>|\n]', '', title)
-                title = title.strip()
+            works.extend(
+                [{
+                    "id": x["id"],                  # 文件夹名
+                    "url": x.img['data-original'],  # 图片地址
+                    "count": 0,                     # 重试次数
+                } for x in photos]
+            )
 
-                # 路径计算
-                basePath = pathlib.Path(dest)
-                path = basePath.joinpath(title)
-                path.mkdir(parents=True, exist_ok=True)
+            # 取标题，并进行非法字符的删除
+            panel = soup.find('div', class_='panel-heading')
+            title = panel.find('div', class_='pull-left').text.strip()
+            title = StripText(title)
 
-                # 打印标题与路径
-                progress.console.print(title)
-                progress.console.print(path)
+            # 路径计算
+            basePath = pathlib.Path(dest)
+            path = basePath.joinpath(title)
+            path.mkdir(parents=True, exist_ok=True)
 
-                # 尝试寻找下一页
-                nextPage = soup.find('a', class_='prevnext')
-                if nextPage is not None:
-                    nextPageURL = nextPage['href']
+            # 打印标题与路径
+            print(title)
+            print(path)
 
-            # 创建进度条
-            progressTask = progress.add_task("total", total=len(works))
-            # 创建 WORKER_NUM 个task，从同一个list中取task，直到list为空
-            tasks = []  # coroutine task
-            copyWorks = works.copy()
-            for i in range(WORKER_NUM):
-                tasks.append(asyncio.create_task(
-                    Worker(i, path, comicID, copyWorks, session, progressTask)))
+            # 尝试寻找下一页
+            nextPage = soup.find('a', class_='prevnext')
+            if nextPage is not None:
+                nextPageURL = nextPage['href']
 
-            # 等待并统计完成的工作数量
-            done = sum(await asyncio.gather(*tasks))
+        # 创建进度条
+        progressTask = progress.add_task("total", total=len(works))
+        # 创建 WORKER_NUM 个task，从同一个list中取task，直到list为空
+        tasks = []  # coroutine task
+        copyWorks = works.copy()
+        for i in range(WORKER_NUM):
+            tasks.append(asyncio.create_task(
+                Worker(i, path, comicID, copyWorks, session, progressTask)))
 
-            allWork += len(works)
-            progress.console.print(f"All worker are done, {done}/{allWork}")
-            # 删除进度条
-            progress.remove_task(progressTask)
+        # 等待并统计完成的工作数量
+        done = sum(await asyncio.gather(*tasks))
+
+        allWork += len(works)
+        print(f"All workers on {comicID} are done, {done}/{allWork}")
+        # 删除进度条
+        progress.remove_task(progressTask)
     return
 
 
@@ -259,6 +279,10 @@ async def GetAllComicIdFromAlbum(albumID: str, dest: pathlib.Path, info: dict = 
     url = f"{endpoint}/album/{albumID}"
     async with aiohttp.ClientSession() as session:
         rsp = await get(session, url, headers=header, proxy=ProxyAddress)
+        if len(rsp) <= 200:
+            print("some error happen")
+            print(rsp)
+            return
 
     idList = []
     soup = bs(rsp, "html.parser")
@@ -268,7 +292,7 @@ async def GetAllComicIdFromAlbum(albumID: str, dest: pathlib.Path, info: dict = 
         idList.append(comicID)
 
     title = soup.title.text
-    title = re.sub('[\\/:*?"<>|\n]', '', title)
+    title = StripText(title)
     newdir = dest.joinpath(title)
 
     for comicID in idList:
@@ -299,6 +323,7 @@ async def main():
         comicIDs = [x for x in info['comicIds'].strip().split(' ') if x != ""]
         dest = pathlib.Path(DOWNLOAD_DIR)
 
+        # Redirect dest if prefix match
         if info['subDir'] != "":
             perfectMatchPath = dest.joinpath(info['subDir'])
             if perfectMatchPath.exists():
@@ -327,4 +352,6 @@ async def main():
     print("Main exit")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    with progress:
+        print = progress.console.print
+        asyncio.run(main())
