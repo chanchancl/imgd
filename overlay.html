@@ -1,0 +1,17 @@
+<div class="card">
+    <div class="progress">
+        <!-- 创建一个 SVG，边框为 #cccccc 颜色，宽度为 2.5px，没有填充色 -->
+        <!-- 画布大小为 36x36 -->
+        <!-- 
+                内圆固定，外圆会从右边0度角开始，随着stroke-dasharray转一圈
+             -->
+        <svg viewBox="0 0 36 36" stroke="#cccccc" stroke-width="2.5" fill="none">
+            <circle cx="18" cy="18" r="15.9155" />
+            <circle id="inner" cx="18" cy="18" r="15.9155" stroke="#4cc790" />
+        </svg>
+        <div class="number">
+            <p><span></span>%</p>
+        </div>
+    </div>
+    <h2></h2>
+</div>

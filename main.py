@@ -11,6 +11,7 @@ from urllib.parse import unquote
 
 from infos import DownloadDir
 
+
 class CustomFormatter(coloredlogs.ColoredFormatter):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -23,15 +24,18 @@ class CustomFormatter(coloredlogs.ColoredFormatter):
 
 app = FastAPI()
 
+
 @app.on_event("startup")
 async def _():
     logger = logging.getLogger("uvicorn.access")
-    logger.handlers[0].setFormatter(CustomFormatter("%(asctime)s - %(levelname)s - %(message)s "))
+    logger.handlers[0].setFormatter(CustomFormatter(
+        "%(asctime)s - %(levelname)s - %(message)s "))
 
 
 @app.get("/")
 def read_root():
     return {"Hello": "World"}
+
 
 def CompressPic(picBytes):
     k = 1
@@ -65,20 +69,27 @@ def CompressPic(picBytes):
 
 
 @app.get("/{comic_name}/{page_id}")
-def check_item(comic_name: str, page_id: str):
+def _(comic_name: str, page_id: str):
     comic_name = re.sub(r'[\\/:*?"<>|#]', '', comic_name)
     root = Path(DownloadDir).joinpath(comic_name)
     if root.exists():
         filepath = root.joinpath(page_id)
         if filepath.exists():
             print(f"File {filepath} is exists")
-            raise HTTPException(status_code=404, detail="File is exists")
+            return {"res": "File is exists"}
 
-    return {"res": "File not exists"}
+    raise HTTPException(status_code=404, detail="File is not exists")
+
+
+def CheckImage(bt: bytes):
+    with Image.open(BytesIO(bt)) as f:
+        if f is None:
+            return False
+    return True
 
 
 @app.post("/{comic_name}/{page_id}")
-def write_item(comic_name: str, page_id: str, imagefile: UploadFile):
+def _(comic_name: str, page_id: str, imagefile: UploadFile):
     bt = imagefile.file.read()
     comic_name = re.sub(r'[\\/:*?"<>|#]', '', comic_name)
     root = Path(DownloadDir).joinpath(comic_name)
@@ -90,8 +101,15 @@ def write_item(comic_name: str, page_id: str, imagefile: UploadFile):
         print(f"File {filepath} is exists")
         raise HTTPException(status_code=404, detail="File is exists")
 
+    if not CheckImage(bt):
+        print(f"{filepath} is broken")
+        raise HTTPException(status_code=404, detail="File is broken")
+
     with filepath.open("bw") as f:
         ret = CompressPic(bt)
         f.write(ret)
-        print(len(ret) // 1024, len(bt) // 1024)
+
+        finalSize = len(ret) // 1024
+        rawSize = len(bt) // 1024
+        print(finalSize, rawSize, f'{finalSize}/{rawSize}')
     return {"comic_name": comic_name, "page_id": page_id, "file_size": len(bt)}

@@ -60,6 +60,8 @@ progress = Progress(
     TimeRemainingColumn(),
 )
 
+exitDownload = False
+
 
 def AsyncWrapper(func):
     @functools.wraps(func)  # 用于保留被包装函数的函数名，文档等内容
@@ -79,7 +81,11 @@ def HashPageColumnNumber(comicID: str, pageID: str):
         n = f"{comicID}{pageID}"
         hs = hashlib.md5()
         hs.update(n.encode())
-        n = ord(hs.hexdigest()[-1]) % 10
+        n = ord(hs.hexdigest()[-1])
+        if int(comicID) <= 421925:
+            n = n % 10
+        else:
+            n = n % 8
         column = [2, 4, 6, 8, 10, 12, 14, 16, 18, 20][n]
     return column
 
@@ -104,6 +110,7 @@ async def get(session: aiohttp.ClientSession, url: str, *args, **kwargs) -> byte
                 if rsp.status == 200:
                     ret = await rsp.read()
                     return ret
+                print(rsp)
         except KeyboardInterrupt:
             # 将key board 异常向上发送，使得外部可以退出，实际上只要不
             # except Exception as e:  就没必要写这句，因为默认就会向外扔
@@ -191,6 +198,7 @@ async def Worker(workerID: int, path: str, comicID: str, queue: list, session: a
 
 
 async def Download(url: str, dest: pathlib.Path, info: dict = None):
+    global exitDownload
     # 识别两种不同的URL格式，并从格式中提取漫画ID
     # getTitle
     # getPageRange
@@ -209,10 +217,17 @@ async def Download(url: str, dest: pathlib.Path, info: dict = None):
             nextPageURL = None
             try:
                 rsp = await get(session, url, headers=header, proxy=ProxyAddress)
+            except KeyboardInterrupt:
+                # 将key board 异常向上发送，使得外部可以退出，实际上只要不
+                # except Exception as e:  就没必要写这句，因为默认就会向外扔
+                print("User interrupt exit")
+                exitDownload = True
+                return
             except Exception:
                 print(f"Failed to download web page {url}, Please check network config")
-                progress.console.print_exception()
-                exit()
+                # progress.console.print_exception()
+                exitDownload = True
+                return
 
             # 从页面获取所有目标资源地址，打包进 works
             soup = bs(rsp, "html.parser")
@@ -296,7 +311,8 @@ async def GetAllComicIdFromAlbum(albumID: str, dest: pathlib.Path, info: dict = 
     newdir = dest.joinpath(title)
 
     for comicID in idList:
-        await Download(f"{endpoint}/photo/{comicID}", newdir, info)
+        if not exitDownload:
+            await Download(f"{endpoint}/photo/{comicID}", newdir, info)
     return
 
 
@@ -341,12 +357,14 @@ async def main():
         print(f"Destination dir : {dest}")
 
         for comicID in comicIDs:
-            await Download(f"{endpoint}/photo/{comicID}", dest, info)
+            if not exitDownload:
+                await Download(f"{endpoint}/photo/{comicID}", dest, info)
 
         albumIDs = [x for x in info['albumPages'].strip().split(' ')
                     if x != ""]
         for albumID in albumIDs:
-            await GetAllComicIdFromAlbum(albumID, dest, info)
+            if not exitDownload:
+                await GetAllComicIdFromAlbum(albumID, dest, info)
 
     await SaveLog(DownloadInfo)
     print("Main exit")

@@ -18,24 +18,29 @@ const convertImageToBlob = async (img) => {
     return new Promise( async resolve => canvas.toBlob(resolve, "image/jpg", 0.9));
 }
 
+// Return true if send success
 const sendImageTo = async (url, blob) => {
     let form = new FormData();
 
-    // this name should align with fastapi
-    form.append("imagefile", blob, "test.png");
+    // this name "imagefile" should be aligned with fastapi
+    form.append("imagefile", blob);
 
-    await new Promise(resolve => {
+    return await new Promise(resolve => {
         GM_xmlhttpRequest({
             method: "POST",
             url: url,
             data: form,
             onload: function (response) {
-                resolve();
+                if (response.status != 200) {
+                    resolve(false)
+                }
+                resolve(true);
             }
         })
     });
 }
 
+// return true if file is exists
 const isFileExists = async (url) => {
     // this name should align with fastapi
     return await new Promise(resolve => {
@@ -44,10 +49,10 @@ const isFileExists = async (url) => {
             url: url,
             onload: function (response) {
                 // console.log("StatusCode of " + response.status);
-                if (response.status != 200) {
-                    resolve(false)
+                if (response.status == 200) {
+                    resolve(true);
                 }
-                resolve(true);
+                resolve(false)
             }
         })
     });

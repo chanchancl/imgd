@@ -6,12 +6,19 @@ import traceback
 
 fileNameTemplate = "{0:04}"
 
+def splitFileName(x: Path):
+    if " " in str(x.name):
+        return str(x.name).split()[-1]
+    return x.name
+
 def CombineFolder(inputPath: Path, outputPath: Path, index):
     files: list[Path] = [x for x in inputPath.iterdir()]
-    files.sort()
+    files.sort(key=splitFileName)
 
     for file in files:
         fileExt = file.suffix.rsplit(".", 1)[-1]
+        if fileExt not in ["jpg", "png", "webp"]:
+            continue
         newFileName = fileNameTemplate.format(index) + f".{fileExt}"
         newFilePath = outputPath.joinpath(newFileName)
         copy(file, newFilePath)
