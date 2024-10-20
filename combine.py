@@ -1,14 +1,21 @@
 
-from shutil import copy
+import os
+import traceback
+import send2trash
+from shutil import copy, rmtree
 from sys import argv
 from pathlib import Path
-import traceback
+from pprint import pprint
+
+from zip import extract, package
+from autoclassfiy import Ask
 
 fileNameTemplate = "{0:04}"
 
 def splitFileName(x: Path):
-    if " " in str(x.name):
-        return str(x.name).split()[-1]
+    #if " " in str(x.name):
+    #    return str(x.name).split()[-1]
+    # print(x.name)
     return x.name
 
 def CombineFolder(inputPath: Path, outputPath: Path, index):
@@ -21,18 +28,28 @@ def CombineFolder(inputPath: Path, outputPath: Path, index):
             continue
         newFileName = fileNameTemplate.format(index) + f".{fileExt}"
         newFilePath = outputPath.joinpath(newFileName)
-        copy(file, newFilePath)
         print(f"\tMove : {file}")
         print(f"\t  to : {newFilePath}")
+        copy(file, newFilePath)
         index += 1
     return index
 
 
-def CombineFolders(inputPaths, output):
+def CombineFolders(inputPaths: list[Path], output: Path):
     currentItem = 1
+    rmDirs = []
     for dir in inputPaths:
-        print(f"Iterate : {dir}")
-        currentItem = CombineFolder(dir, output, currentItem)
+        realPath = dir
+        if dir.suffix == '.zip':
+            extract(dir)
+            realPath = dir.with_suffix("")
+        print(f"Iterate : {realPath}")
+        currentItem = CombineFolder(realPath, output, currentItem)
+        rmDirs.append(realPath)
+    package(output)
+    rmDirs.append(output)
+    pprint(rmDirs)
+    send2trash.send2trash(rmDirs)
 
 def main():
     if len(argv) <= 1:
@@ -49,8 +66,8 @@ def main():
     basePath = Path(inputPaths[0]).parent
     print(f"BasePath : {basePath}")
     print("\nPlease input output folder name")
-    outputName = input()
 
+    outputName = input()
     destPath = basePath.joinpath(outputName)
 
     if destPath.exists():
@@ -68,4 +85,5 @@ if __name__ == "__main__":
         main()
     except Exception:
         print(traceback.format_exc())
+        input()
     input()

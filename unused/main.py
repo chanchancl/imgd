@@ -21,6 +21,14 @@ class CustomFormatter(coloredlogs.ColoredFormatter):
         msg = super().formatMessage(record)
         return unquote(msg)
 
+class NoColorCustomFormatter(logging.Formatter):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def formatMessage(self, record):
+        record = copy(record)
+        msg = super().formatMessage(record)
+        return unquote(msg)
 
 app = FastAPI()
 
@@ -30,6 +38,11 @@ async def _():
     logger = logging.getLogger("uvicorn.access")
     logger.handlers[0].setFormatter(CustomFormatter(
         "%(asctime)s - %(levelname)s - %(message)s "))
+    # fileHandler = logging.FileHandler("main.log", encoding='utf-8')
+    # fileHandler.setFormatter(NoColorCustomFormatter(
+    #     "%(asctime)s - %(levelname)s - %(message)s "))
+    # logger.addHandler(fileHandler)
+    # print(logger.handlers)
 
 
 @app.get("/")
@@ -90,7 +103,9 @@ def CheckImage(bt: bytes):
 
 @app.post("/{comic_name}/{page_id}")
 def _(comic_name: str, page_id: str, imagefile: UploadFile):
-    bt = imagefile.file.read()
+    logger = logging.getLogger("uvicorn.access")
+
+    imgData = imagefile.file.read()
     comic_name = re.sub(r'[\\/:*?"<>|#]', '', comic_name)
     root = Path(DownloadDir).joinpath(comic_name)
     if not root.exists():
@@ -98,18 +113,19 @@ def _(comic_name: str, page_id: str, imagefile: UploadFile):
 
     filepath = root.joinpath(page_id)
     if filepath.exists():
-        print(f"File {filepath} is exists")
+        logger.info(f"File {filepath} is exists")
         raise HTTPException(status_code=404, detail="File is exists")
 
-    if not CheckImage(bt):
-        print(f"{filepath} is broken")
+    if not CheckImage(imgData):
+        logger.info(f"{filepath} is broken")
         raise HTTPException(status_code=404, detail="File is broken")
 
     with filepath.open("bw") as f:
-        ret = CompressPic(bt)
+        ret = CompressPic(imgData)
+        # ret = imgData
         f.write(ret)
 
         finalSize = len(ret) // 1024
-        rawSize = len(bt) // 1024
+        rawSize = len(imgData) // 1024
         print(finalSize, rawSize, f'{finalSize}/{rawSize}')
-    return {"comic_name": comic_name, "page_id": page_id, "file_size": len(bt)}
+    return {"comic_name": comic_name, "page_id": page_id, "file_size": len(imgData)}

@@ -1,5 +1,6 @@
 
-from time import sleep
+from os import utime
+from time import time,sleep
 from pprint import pprint
 from sys import argv
 from pathlib import Path
@@ -9,13 +10,11 @@ from typing import List
 fileNameTemplate = "{0:04}"
 
 def RefreshFolder(inputPaths: List[Path]):
-    for dir in inputPaths:
-        if dir.is_dir():
-            dest = dir.joinpath("tmptest")
-            dest.mkdir(exist_ok=True)
-            sleep(0.1)
-            dest.rmdir()
-            print(f"Done on {dir}")
+    for destPath in inputPaths:
+        currentTimestamp = time()
+        utime(destPath, (currentTimestamp, currentTimestamp))
+        print("Success to refresh time")
+        sleep(0.1)
 
 def main():
     if len(argv) <= 1:
@@ -23,7 +22,8 @@ def main():
         exit(0)
 
     inputPaths = [Path(x) for x in argv[1:]]
-    # pprint(inputPaths)
+    inputPaths = sorted(inputPaths)
+    pprint(inputPaths)
 
     RefreshFolder(inputPaths)
 
