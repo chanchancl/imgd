@@ -1,8 +1,8 @@
 
-import os
+
 import traceback
 import send2trash
-from shutil import copy, rmtree
+from shutil import copy
 from sys import argv
 from pathlib import Path
 from pprint import pprint
@@ -12,7 +12,7 @@ from autoclassfiy import Ask
 
 fileNameTemplate = "{0:04}"
 
-def splitFileName(x: Path):
+def SplitFileName(x: Path):
     #if " " in str(x.name):
     #    return str(x.name).split()[-1]
     # print(x.name)
@@ -20,7 +20,7 @@ def splitFileName(x: Path):
 
 def CombineFolder(inputPath: Path, outputPath: Path, index):
     files: list[Path] = [x for x in inputPath.iterdir()]
-    files.sort(key=splitFileName)
+    files.sort(key=SplitFileName)
 
     for file in files:
         fileExt = file.suffix.rsplit(".", 1)[-1]
@@ -47,6 +47,10 @@ def CombineFolders(inputPaths: list[Path], output: Path):
         currentItem = CombineFolder(realPath, output, currentItem)
         rmDirs.append(realPath)
     package(output)
+    
+    print("Delete folders?")
+    if not Ask():
+        return
     rmDirs.append(output)
     pprint(rmDirs)
     send2trash.send2trash(rmDirs)

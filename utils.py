@@ -10,3 +10,11 @@ def BuildHeaderFromStr(s: dict):
             continue
         headers[parts[0]] = parts[1]
     return headers
+
+def Ask(prompt = ""):
+    if prompt != "":
+        print(prompt)
+    ans = input().strip()
+    if ans == "" or ans not in "yY":
+        return False
+    return True

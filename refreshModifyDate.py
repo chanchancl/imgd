@@ -1,11 +1,13 @@
 
+import traceback
+
 from os import utime
-from time import time,sleep
-from pprint import pprint
 from sys import argv
 from pathlib import Path
-import traceback
+from pprint import pprint
+from time import sleep, time
 from typing import List
+
 
 fileNameTemplate = "{0:04}"
 

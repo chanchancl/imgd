@@ -4,25 +4,18 @@ import sys
 import time
 import shutil
 import traceback
+
 from re import search
 from infos import DownloadDir, IgnoredArtist, ArtistAlias
-from pathlib import Path, WindowsPath
+from pathlib import Path
 from collections import defaultdict
-from pprint import pprint
+from utils import Ask
 
 ROOT_PATH = DownloadDir
 cachedir = None
-
 fileNameTemplate = "{0:04}"
-
 # DEBUG_MODE = True
 DEBUG_MODE = False
-
-def Ask():
-    ans = input().strip()
-    if ans == "" or ans not in "yY":
-        return False
-    return True
 
 
 def Move(src, dst):
@@ -36,7 +29,8 @@ def Move(src, dst):
             print("*"*80)
 
 
-def ProcessTarget2Raw(target2Src:dict[str,list]):
+def ProcessSaveFolder(target2Src:dict[str,list]):
+    print("here")
     for targetFolder, srcPaths in target2Src.items():
          targetPath = Path(targetFolder)
          if not targetPath.exists():
@@ -48,6 +42,20 @@ def ProcessTarget2Raw(target2Src:dict[str,list]):
             Move(path, targetFolder)
 
 
+def ProcessNoExistSaveFolder(noExistSaveFolder: dict[str, list]):
+    if len(noExistSaveFolder.keys()) > 0:
+        print(f"Some new artists, create folder for them? ({len(noExistSaveFolder.keys())})")
+        for path in noExistSaveFolder.keys():
+            print(f"\t{path.name}")
+        print("y/N")
+
+        if Ask():
+            print("Create new folder and move")
+            ProcessSaveFolder(noExistSaveFolder)
+        else:
+            print("Don't create new folder, no action")
+
+
 def MergeAlias(artist):
     for line in ArtistAlias:
         raw, aliasList = [ x.strip() for x in line.split(":")]
@@ -56,19 +64,18 @@ def MergeAlias(artist):
             return raw
     return artist
 
+
 # two types artist
 # 1: [group(artist)]
 # 2: [artist]
-def FindArtist(who)-> str:
+def FindArtist(who: Path)-> str:
     inputPath = who
-    if type(who) is WindowsPath:
+    if isinstance(who, Path):
         inputPath = who.name
-
     ret = search(r"\[(.*?)\]", inputPath)
     if not ret:
         # print(f"No [] found in path {inputPath}")
         return ""
-
     artistInnerQuote = search(r"\((.*?)\)", ret.group(1))
     artist = ""
     if artistInnerQuote:
@@ -79,12 +86,31 @@ def FindArtist(who)-> str:
         # [artist]
         # print(f"\tWithout quote")
         artist = ret.group(1)
-
-    if any(artist == ignored for ignored in IgnoredArtist):
+    if any(artist.find(ignored) != -1 for ignored in IgnoredArtist):
         remainingPath = inputPath[ret.end():]
         # print(f"ignored found {inputPath}, end {ret.end()}, will find in {remainingPath}")
         return FindArtist(remainingPath)
     # print(f"{artist}")
+    return artist.strip()
+
+def FindArtistV2(who: Path) -> str:
+    inputPath = who
+    if isinstance(who, Path):
+        inputPath = who.name
+    starti, endi = inputPath.find('[')+1, inputPath.find(']')
+    if any(x == -1 for x in [starti, endi]):
+        return ""
+
+    inBrackets = inputPath[starti:endi]
+    artist = inBrackets
+    startia, endia = inBrackets.find('(')+1, inBrackets.find(')')
+    if all(x != -1 for x in [startia, endia]):
+        artist = inBrackets[startia: endia]
+
+    if any(artist.find(ignored) != -1 for ignored in IgnoredArtist):
+        remainingPath = inputPath[endi:]
+        # print(f"ignored found {inputPath}, end {endi}, will find in {remainingPath}")
+        return FindArtistV2(remainingPath)
     return artist.strip()
 
 
@@ -98,16 +124,29 @@ def FindSaveFolder(artist: str) -> Path:
     for dir in cachedir:
         if dir.startswith(artist):
             return Path(ROOT_PATH).joinpath(dir)
-    
     return None
 
 
+def SplitBySaveFolder(path2artist) -> tuple[list, list]:
+    saveFolder2SrcPath = defaultdict(list)
+    noExistSaveFolder = defaultdict(list)
+    for rawPath, artist in path2artist.items():
+        print(rawPath)
+        print("\t" + str(artist))
+        saveFolder = FindSaveFolder(artist)
+        print(f"\t\t {saveFolder}")
+        if saveFolder is not None:
+            # artist already have one folder
+            saveFolder2SrcPath[saveFolder].append(rawPath)
+        else:
+            # artist doesn't have folder, create new one
+            saveFolder = Path(ROOT_PATH).joinpath(artist)
+            noExistSaveFolder[saveFolder].append(rawPath)
+    return saveFolder2SrcPath, noExistSaveFolder
+
+
 def main():
-    #print("Do you know what you are doing?")
-    #print(f"\t DEBUG_MODE = {DEBUG_MODE}")
-    #print("(y/N)")
-    #ans = input()
-    #if ans.strip() == "" or ans.strip() not in "yY":
+    # if Ask(f"Do you know what you are doing?\n\tDEBUG_MODE = {DEBUG_MODE}\n(y/N)"):
     #    return
 
     if len(sys.argv) <= 1:
@@ -116,53 +155,16 @@ def main():
 
     inputPaths = [Path(x) for x in sys.argv[1:] ]
     inputPaths = sorted(inputPaths)
-    # pprint(inputPaths)
 
-    # c:\[abc]hello\ : abc
-    path2artist = {}
-    for x in inputPaths:
-        if ret := FindArtist(x):
-            path2artist[x] = ret
+    path2Artist = { raw: artist for raw in inputPaths
+                   if (artist := FindArtistV2(raw))}
 
-    targetFolder2SrcPath = defaultdict(list)
-    NoTargetFolder2SrcPath = defaultdict(list)
-    for rawPath, artist in path2artist.items():
-        print(rawPath)
-        print("\t" + str(artist))
-        saveFolder = FindSaveFolder(artist)
-        print(f"\t\t {saveFolder}")
-        if saveFolder is not None:
-            targetFolder2SrcPath[saveFolder].append(rawPath)
-        else:
-            # artist doesn't have save folder, create new one
-            saveFolder = Path(ROOT_PATH).joinpath(artist)
-            NoTargetFolder2SrcPath[saveFolder].append(rawPath)
+    saveFolder, noExistSaveFolder = SplitBySaveFolder(path2Artist)
 
-    ProcessTarget2Raw(targetFolder2SrcPath)
+    ProcessSaveFolder(saveFolder)
+    ProcessNoExistSaveFolder(noExistSaveFolder)
 
-    if len(NoTargetFolder2SrcPath.keys()) > 0:
-        print(f"Some new artists, create folder for them? ({len(NoTargetFolder2SrcPath.keys())})")
-        for path in NoTargetFolder2SrcPath.keys():
-            print(f"\t{path.name}")
-        print("y/N")
-
-        if Ask():
-            print("Create new folder and move")
-            ProcessTarget2Raw(NoTargetFolder2SrcPath)
-        else:
-            print("Don't create new folder, no action")
-        
     print("Work Done!")
-
-
-def Test():
-    for it in os.listdir(ROOT_PATH):
-        ret = FindArtist(it)
-        if ret != "":
-            pass
-            print(it)
-            print(f"\t{ret}")
-            print(f"\t\t{FindSaveFolder(ret)}")
 
 
 def ExitInSeconds(seconds):
