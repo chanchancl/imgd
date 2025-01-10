@@ -69,9 +69,8 @@ def MergeAlias(artist):
 # 1: [group(artist)]
 # 2: [artist]
 def FindArtist(who: Path)-> str:
-    inputPath = who
-    if isinstance(who, Path):
-        inputPath = who.name
+    inputPath = who.name if isinstance(who, Path) else who
+    
     ret = search(r"\[(.*?)\]", inputPath)
     if not ret:
         # print(f"No [] found in path {inputPath}")
@@ -94,9 +93,8 @@ def FindArtist(who: Path)-> str:
     return artist.strip()
 
 def FindArtistV2(who: Path) -> str:
-    inputPath = who
-    if isinstance(who, Path):
-        inputPath = who.name
+    inputPath = who.name if isinstance(who, Path) else who
+
     starti, endi = inputPath.find('[')+1, inputPath.find(']')
     if any(x == -1 for x in [starti, endi]):
         return ""

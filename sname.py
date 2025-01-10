@@ -9,6 +9,7 @@ from utils import Ask
 
 _DEBUG = False
 
+RemoveGroup = False
 
 def FindArtistStartIndex(who: str|Path) -> str:
     input_path = who.name if isinstance(who, Path) else who
@@ -18,9 +19,10 @@ def FindArtistStartIndex(who: str|Path) -> str:
 
     inBrackets = input_path[start_idx+1:end_idx]
     artist = inBrackets
-    # startia, endia = inBrackets.find('('), inBrackets.find(')')
-    # if all(x != -1 for x in [startia, endia]):
-    #     artist = inBrackets[startia+1: endia].strip()
+    if RemoveGroup:
+        startia, endia = inBrackets.find('('), inBrackets.find(')')
+        if all(x != -1 for x in [startia, endia]):
+            artist = inBrackets[startia+1: endia].strip()
 
     if any(ignored in artist for ignored in IgnoredArtist):
         remainingPath = input_path[end_idx+1:].strip()
@@ -64,6 +66,10 @@ def main():
     if len(sys.argv) <= 1:
         print("Please take parameters as input")
         exit(0)
+    
+    if Ask("Remove group name? (y/N)"):
+        global RemoveGroup
+        RemoveGroup = True
 
     inputPaths = [Path(x) for x in sys.argv[1:] ]
     inputPaths = sorted(inputPaths, key= lambda path: os.stat(path).st_ctime_ns)

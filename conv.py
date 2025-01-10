@@ -22,7 +22,13 @@ def translateFormat(path: Path) -> Path:
     newBase = base.joinpath(newDirName)
     for x in Path(path).iterdir():
         if not x.name.endswith(WantReplace):
+            # copy x to new dir
+            newBase.mkdir(exist_ok=True)
+            newFilePath = newBase.joinpath(x.name)
+            x.rename(newFilePath)
+            print(f"Move file : {x} to {newFilePath}")
             continue
+
         newPath = newBase.joinpath(Path(x.parts[-1]).with_suffix(Target))
         print(x)
         print(f'\t{newPath}')
