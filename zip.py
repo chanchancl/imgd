@@ -5,6 +5,7 @@ import traceback
 from pathlib import Path
 from sys import argv
 
+from utils import ExitInSeconds
 
 # p ： 一个文件夹
 # 将文件夹p压缩为 zip 压缩包
@@ -28,20 +29,22 @@ def package(p: Path):
 def extract(p: Path) -> Path:
     if p.suffix != ".zip":
         raise ValueError("Provided path is not a zip file")
-    
+
+    output_dir = ""
     with zipfile.ZipFile(p, "r") as zipObj:
         allFiles = zipObj.namelist()
-        rootItems = { Path(f).parts[0] for f in allFiles }
-        if len(rootItems) == 1:
+        rootItemsSet = {Path(f).parts[0] for f in allFiles}
+        if len(rootItemsSet) == 1:
             # only have one folder there
-            output_dir = Path(p.parent, rootItems.pop())
+            output_dir = Path(p.parent, rootItemsSet.pop())
             zipObj.extractall(p.parent)
         else:
             # have many files there
-            output_dir = p.with_suffix("")
+            output_dir = p.with_name(p.stem.strip())
             output_dir.mkdir(exist_ok=True)
             zipObj.extractall(output_dir)
     return output_dir
+
 
 def main():
     if len(argv) <= 1:
@@ -62,9 +65,10 @@ def main():
 
     print("Work Done!")
 
+
 if __name__ == "__main__":
     try:
         main()
     except Exception:
         print(traceback.format_exc())
-    input()
+    ExitInSeconds(10)

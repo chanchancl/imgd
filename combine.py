@@ -1,32 +1,22 @@
-
-
 import traceback
-import send2trash
 from shutil import copy
 from sys import argv
 from pathlib import Path
-from pprint import pprint
+from tempfile import TemporaryDirectory
+from send2trash import send2trash
 
 from zip import extract, package
-from autoclassfiy import Ask
 
-fileNameTemplate = "{0:04}"
 
-def SplitFileName(x: Path):
-    #if " " in str(x.name):
-    #    return str(x.name).split()[-1]
-    # print(x.name)
-    return x.name
-
-def CombineFolder(inputPath: Path, outputPath: Path, index):
-    files: list[Path] = [x for x in inputPath.iterdir()]
-    files.sort(key=SplitFileName)
+def combineFolder(inputPath: Path, outputPath: Path, index):
+    files: list[Path] = [file for file in inputPath.iterdir()]
+    files.sort(key=lambda x: x.name)
 
     for file in files:
-        fileExt = file.suffix.rsplit(".", 1)[-1]
+        fileExt = file.suffix.lstrip(".")
         if fileExt not in ["jpg", "png", "webp"]:
             continue
-        newFileName = fileNameTemplate.format(index) + f".{fileExt}"
+        newFileName = f"{index:04}.{fileExt}"
         newFilePath = outputPath.joinpath(newFileName)
         print(f"\tMove : {file}")
         print(f"\t  to : {newFilePath}")
@@ -35,32 +25,30 @@ def CombineFolder(inputPath: Path, outputPath: Path, index):
     return index
 
 
-def CombineFolders(inputPaths: list[Path], output: Path):
-    currentItem = 1
-    rmDirs = []
-    for dir in inputPaths:
-        realPath = dir
-        if dir.suffix == '.zip':
-            extract(dir)
-            realPath = dir.with_suffix("")
-        print(f"Iterate : {realPath}")
-        currentItem = CombineFolder(realPath, output, currentItem)
-        rmDirs.append(realPath)
-    package(output)
-    
-    print("Delete folders?")
-    if not Ask():
-        return
-    rmDirs.append(output)
-    pprint(rmDirs)
-    send2trash.send2trash(rmDirs)
+def combineFolders(inputPaths: list[Path], outputPath: Path):
+    currentIndex = 1
+
+    with TemporaryDirectory(dir=outputPath.parent) as tempDirName:
+        tempDirPath = outputPath.parent.joinpath(tempDirName)
+        print(f"Output : {tempDirPath}")
+        for folder in inputPaths:
+            copy(folder, tempDirPath)
+        for zipFile in tempDirPath.iterdir():
+            realPath = zipFile
+            if zipFile.suffix == '.zip':
+                realPath = extract(zipFile)
+            print(f"Iterate : {realPath}")
+            currentIndex = combineFolder(realPath, outputPath, currentIndex)
+    package(outputPath)
+    send2trash(outputPath)
+
 
 def main():
     if len(argv) <= 1:
         print("Please take parameters as input")
         exit(0)
 
-    inputPaths = [Path(x) for x in argv[1:]]
+    inputPaths = [Path(arg) for arg in argv[1:]]
     inputPaths.sort()
 
     print("Here are folder list :")
@@ -69,20 +57,21 @@ def main():
 
     basePath = Path(inputPaths[0]).parent
     print(f"BasePath : {basePath}")
-    print("\nPlease input output folder name")
 
+    print("\nPlease give output folder name")
     outputName = input()
     destPath = basePath.joinpath(outputName)
 
     if destPath.exists():
-        print(f"Output path is exists, will remove it, {destPath}")
+        print(f"Output path exists, will remove it, {destPath}")
         destPath.rmdir()
 
     destPath.mkdir()
 
-    CombineFolders(inputPaths, destPath)
+    combineFolders(inputPaths, destPath)
 
     print("Work Done!")
+
 
 if __name__ == "__main__":
     try:

@@ -7,4 +7,6 @@ __pycache__/
 
 test/
 
+cache/
+
 infos.py

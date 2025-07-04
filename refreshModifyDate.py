@@ -11,12 +11,14 @@ from typing import List
 
 fileNameTemplate = "{0:04}"
 
+
 def RefreshFolder(inputPaths: List[Path]):
     for destPath in inputPaths:
         currentTimestamp = time()
         utime(destPath, (currentTimestamp, currentTimestamp))
         print("Success to refresh time")
         sleep(0.1)
+
 
 def main():
     if len(argv) <= 1:
@@ -30,6 +32,7 @@ def main():
     RefreshFolder(inputPaths)
 
     print("Work Done!")
+
 
 if __name__ == "__main__":
     try:

@@ -28,6 +28,8 @@ Endpoint = "https://example.com"
 
 DownloadDir = "./"
 
+ActualDownload = "./ActualDownload"
+
 ProxyAddress = "http://localhost:8888"
 
 # 工作线程(协程)数量

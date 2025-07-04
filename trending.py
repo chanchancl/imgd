@@ -20,7 +20,7 @@ def main():
     inputPaths.sort()
 
     outputPath = environ[OUTPUT_PATH]
-    
+
     with open(outputPath, "a", encoding="utf-8") as f:
         f.write(f"\n{timeStr} Trending:\n")
         maxLen = -1
@@ -38,16 +38,18 @@ def main():
         print(maxLen)
         for buffer in buffers:
             print(buffer[0], maxLen, maxLen - wcswidth(buffer[0]))
-            space = " "*(maxLen - wcswidth(buffer[0]) + 1)
+            space = " " * (maxLen - wcswidth(buffer[0]) + 1)
             f.write(f"  {buffer[0]}{space}{buffer[1]}\n")
 
     print("Work Done!")
+
 
 def readenv():
     with open(".env", "r") as f:
         for line in [x for x in f.readlines() if x.strip() != ""]:
             key, value = line.split()
             environ[key] = value
+
 
 if __name__ == "__main__":
     try:

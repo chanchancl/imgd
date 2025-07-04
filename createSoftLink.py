@@ -5,6 +5,7 @@ import winshell
 
 from infos import LinkPath
 
+
 def LinkTo(src: Path, destDir: Path):
     print(src.stem)
     stem = src.stem
@@ -16,6 +17,7 @@ def LinkTo(src: Path, destDir: Path):
         Target=str(src),
     )
 
+
 def main():
     inputPaths = [Path(x) for x in argv[1:]]
     dest = Path(LinkPath)
@@ -23,6 +25,7 @@ def main():
         LinkTo(path, dest)
 
     print("Work Done!")
+
 
 if __name__ == "__main__":
     try:
