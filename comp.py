@@ -5,7 +5,6 @@ import send2trash
 from sys import argv
 from pathlib import Path
 from PIL import Image
-from zipfile import ZipFile
 import pillow_avif  # noqa: F401 # make pillow support avif format
 
 from zip import extract, package
@@ -18,38 +17,28 @@ if Target == '.jpg':
     FORMAT = 'JPEG'
 
 
-def translateFormat(path: Path) -> Path:
+def compressFolder(path: Path) -> Path:
     base = path.parent
-    newDirName = f"new {path.name}"
-    newBase = base.joinpath(newDirName)
+    newBase = base.joinpath(f"new {path.name}")
     for x in Path(path).iterdir():
-        if not x.name.endswith(WantReplace):
-            # copy x to new dir
+        if x.suffix not in ['.jpg', '.png', '.avif']:
             newBase.mkdir(exist_ok=True)
             newFilePath = newBase.joinpath(x.name)
             x.rename(newFilePath)
-            print(f"Move file : {x} to {newFilePath}")
             continue
-
         newPath = newBase.joinpath(Path(x.parts[-1]).with_suffix(Target))
         print(x)
         print(f'\t{newPath}')
         if not newPath.parent.exists():
             newPath.parent.mkdir(parents=True)
         with Image.open(x) as image:
+            # img = image
             img = image.convert("RGB")
+            # img.resize(map(int, [image.width * 0.6, image.height * 0.6]))
             img.save(newPath, FORMAT)
     send2trash.send2trash(path)
     Path(f"New : {newBase}")
     return newBase
-
-
-def has_avif_in_zip(zip_path: Path) -> bool:
-    with ZipFile(zip_path, 'r') as zip_file:
-        for file_name in zip_file.namelist():
-            if file_name.endswith(WantReplace):
-                return True
-    return False
 
 def main():
     if len(argv) <= 1:
@@ -64,21 +53,10 @@ def main():
         output = path
         if path.name.endswith(".zip"):
             inZIP = True
-            if not has_avif_in_zip(path):
-                print(f"Skip {path}, no avif in zip")
-                continue
             output = Path(extract(path))
             path.rename(path.with_name(f"back {path.name}"))
-        else:
-            # handle single file
-            if path.name.endswith(WantReplace):
-                with Image.open(path) as image:
-                    newPath = path.with_name(path.with_suffix(Target).name)
-                    img = image.convert("RGB")
-                    img.save(newPath, FORMAT)
-            continue
 
-        newPath = translateFormat(output)
+        newPath = compressFolder(output)
 
         newPath = newPath.rename(output)
         print(f"output : {output}")

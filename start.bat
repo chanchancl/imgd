@@ -1,0 +1,1 @@
+uvicorn dataserver:app --reload

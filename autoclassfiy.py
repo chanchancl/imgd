@@ -97,20 +97,21 @@ def FindArtist(who: Path) -> str:
 def FindArtistV2(who: Path) -> str:
     inputPath = who.name if isinstance(who, Path) else who
 
-    startIdx, endIdx = inputPath.find('[') + 1, inputPath.find(']')
-    if startIdx == -1 or endIdx == -1 or startIdx >= endIdx:
+    startId, endId = inputPath.find('[') + 1, inputPath.find(']')
+    if startId == -1 or endId == -1 or startId >= endId:
         return ""
 
-    inBrackets = inputPath[startIdx:endIdx]
+    inBrackets = inputPath[startId:endId]
     artist = inBrackets
     startIdInB, endIdInB = inBrackets.find('(') + 1, inBrackets.find(')')
     if startIdInB != -1 and endIdInB != -1:
         artist = inBrackets[startIdInB: endIdInB]
 
     if any(artist.find(ignored) != -1 for ignored in IgnoredArtist):
-        remainingPath = inputPath[endIdx:]
-        # print(f"ignored found {inputPath}, end {endi}, will find in {remainingPath}")
+        remainingPath = inputPath[endId + 1:].strip()
+        # print(f"ignored found {inputPath}, end {endId}, will find in {remainingPath}")
         return FindArtistV2(remainingPath)
+    artist = artist.replace('[', '').replace(']', '')
     return artist.strip()
 
 

@@ -39,7 +39,7 @@ def NewFileLogger(filePath: str, debug: bool = False) -> Logger:
     logger.setLevel(DEBUG)
 
     fileFormatter = Formatter(
-        '%(asctime)s | %(name)s | %(levelname)-8s | %(message)s',
+        '%(asctime)s | %(levelname)-8s | %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
 
@@ -51,13 +51,17 @@ def NewFileLogger(filePath: str, debug: bool = False) -> Logger:
     class RawMessageFormatter(Formatter):
         def format(self, record):
             return record.getMessage()
-
-    consleHandler = StreamHandler(sys.stdout)
-    consleHandler.setLevel(DEBUG if debug else INFO)
-    consleHandler.setFormatter(RawMessageFormatter())
+    consoleFormatter = Formatter(
+        '%(asctime)s | %(levelname)-8s | %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    consoleHandler = StreamHandler(sys.stdout)
+    consoleHandler.setLevel(DEBUG if debug else INFO)
+    consoleHandler.setFormatter(consoleFormatter)
+    # consleHandler.setFormatter(RawMessageFormatter())
 
     logger.addHandler(fileHandler)
-    logger.addHandler(consleHandler)
+    logger.addHandler(consoleHandler)
 
     return logger
 
