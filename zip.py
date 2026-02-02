@@ -12,10 +12,10 @@ from utils import ExitInSeconds
 def package(p: Path):
     zipFilePath = p.with_suffix(".zip")
     if zipFilePath.exists():
-        print(f"\033[91m\tFile exists : {zipFilePath}\033[0m")
+        print(f"\tFile exists : {zipFilePath}")
         return
 
-    with zipfile.ZipFile(zipFilePath, "w") as zipObj:
+    with zipfile.ZipFile(zipFilePath, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=5) as zipObj:
         for file in p.rglob('*'):
             zipObj.write(file, file.relative_to(p.parent))
     atime = p.stat().st_atime

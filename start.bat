@@ -1,1 +1,1 @@
-uvicorn dataserver:app --reload
+uvicorn dataserver:app --host 0.0.0.0 --port 8353 --reload

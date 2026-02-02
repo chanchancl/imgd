@@ -27,9 +27,32 @@ def Ask(prompt=""):
 
 
 def ExitInSeconds(seconds=10):
-    for i in range(seconds):
-        print(f"Will exist after {seconds - i} seconds")
-        time.sleep(1)
+    try:
+        import keyboard
+    except ImportError:
+        print("Warning: 'keyboard' library not installed. Run: pip install keyboard")
+        for i in range(seconds):
+            print(f"Will exit after {seconds - i} seconds")
+            time.sleep(1)
+        return
+
+    esc_pressed = False
+
+    def on_esc(event):
+        nonlocal esc_pressed
+        esc_pressed = True
+
+    keyboard.on_press_key('esc', on_esc)
+
+    try:
+        for i in range(seconds):
+            print(f"Will exit after {seconds - i} seconds")
+            time.sleep(1)
+            if esc_pressed:
+                print("ESC pressed, exiting...")
+                break
+    finally:
+        keyboard.remove_hotkey('esc')
 
 
 def NewFileLogger(filePath: str, debug: bool = False) -> Logger:
