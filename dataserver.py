@@ -41,6 +41,8 @@ class TitlesCache:
         )
 
     def save(self, filepath: str | Path) -> None:
+        if JUST_LOAD:
+            return
         """保存到 JSON 文件"""
         with open(filepath, "w", encoding="utf-8") as f:
             json.dump(self.to_dict(), f, ensure_ascii=False, indent=4)
@@ -58,16 +60,12 @@ class TitlesCache:
 
 searchPath = [ActualDownload]
 
+# Remove cache_middleware log
 cm_logger.remove(0)
 
 logger = NewFileLogger(__file__, True)
 
 # FoundResult
-# 1.Exactly match
-# 2.Part match
-# 3.Fuzzy match
-# 4.No match
-#
 MATCH_NO      = 0
 MATCH_FUZZY   = 1
 MATCH_PART    = 2
@@ -76,6 +74,7 @@ MATCH_EXACTLY = 3
 PART_MATCH_THRESHOLD = 0.65
 CACHE_MIN_REFRESH_INTERVAL_HOURS = 1
 CACHE_PATH = "cache/TitlesCache.json"
+JUST_LOAD = False
 
 last_cache_update_time = datetime.datetime.now()
 cleaned_title_cache_list = []
@@ -85,7 +84,7 @@ author_cache_list = []
 
 def _collect_cleaned_titles_from_filesystem() -> list[str]:
     """从文件系统收集所有清理后的标题"""
-    names = []
+    names: list[str] = []
     root = Path(DownloadDir)
 
     if root.exists():
@@ -260,7 +259,7 @@ async def query_author(author: str):
 
 async def refresh_cleaned_title_cache():
     global cleaned_title_cache_list
-    while True:
+    while not JUST_LOAD:
         logger.info("Waiting for 12 hours to refresh cleaned title cache...")
         await asyncio.sleep(3600 * 12)  # Refresh every 12 hours
         cleaned_title_cache_list = []

@@ -117,9 +117,9 @@ def main():
         logger.error("Please take parameters as input")
         exit(0)
 
-    if Ask("Remove group name? (y/N)"):
-        global RemoveGroup
-        RemoveGroup = True
+    #if Ask("Remove group name? (y/N)"):
+    #    global RemoveGroup
+    RemoveGroup = True
 
     formatNameTask([Path(x) for x in sys.argv[1:]])
 
