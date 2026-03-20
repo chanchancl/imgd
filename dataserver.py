@@ -5,6 +5,11 @@ import uvicorn
 import difflib
 import datetime
 
+import sys
+import time
+import threading
+import pystray
+
 from pathlib import Path
 from dataclasses import dataclass
 from contextlib import asynccontextmanager
@@ -16,9 +21,9 @@ from cache_middleware import CacheMiddleware, MemoryBackend, cache as DecoratorC
 from cache_middleware.logger_config import logger as cm_logger
 
 from utils import NewFileLogger
-from infos import DownloadDir, ActualDownload, IgnoredNames
+from infos import SearchPathDir, DownloadPath, IgnoredNames, JUST_LOAD
 from autoclassfiy import FindArtistV2
-
+from PIL import Image, ImageDraw
 
 @dataclass
 class TitlesCache:
@@ -41,8 +46,8 @@ class TitlesCache:
         )
 
     def save(self, filepath: str | Path) -> None:
-        if JUST_LOAD:
-            return
+        # if JUST_LOAD:
+        #     return
         """保存到 JSON 文件"""
         with open(filepath, "w", encoding="utf-8") as f:
             json.dump(self.to_dict(), f, ensure_ascii=False, indent=4)
@@ -56,9 +61,11 @@ class TitlesCache:
 
     def is_valid(self, max_age_days: int = 1) -> bool:
         """检查缓存是否有效"""
+        if JUST_LOAD:
+            return True
         return datetime.datetime.now() - self.createTime < datetime.timedelta(days=max_age_days)
 
-searchPath = [ActualDownload]
+searchPath = [DownloadPath]
 
 # Remove cache_middleware log
 cm_logger.remove(0)
@@ -74,18 +81,17 @@ MATCH_EXACTLY = 3
 PART_MATCH_THRESHOLD = 0.65
 CACHE_MIN_REFRESH_INTERVAL_HOURS = 1
 CACHE_PATH = "cache/TitlesCache.json"
-JUST_LOAD = False
 
 last_cache_update_time = datetime.datetime.now()
 cleaned_title_cache_list = []
 author_cache_list = []
 
-
+# 缓存加载/扫描/保存
 
 def _collect_cleaned_titles_from_filesystem() -> list[str]:
     """从文件系统收集所有清理后的标题"""
     names: list[str] = []
-    root = Path(DownloadDir)
+    root = Path(SearchPathDir)
 
     if root.exists():
         for path, dirnames, filenames in root.walk():
@@ -110,19 +116,25 @@ def _collect_cleaned_titles_from_filesystem() -> list[str]:
 
 
 def _update_global_cache(cleaned_titles: list[str]) -> None:
-    """更新全局缓存列表"""
-    cleaned_title_cache_list.clear()
+    """更新全局缓存列表，不清空"""
+    # cleaned_title_cache_list.clear()
+    global cleaned_title_cache_list
     cleaned_title_cache_list.extend(cleaned_titles)
+    cleaned_title_cache_list = filter(lambda x: not x.startswith("_"), cleaned_title_cache_list)
+
+    cleaned_title_cache_list = sorted(set(cleaned_title_cache_list), reverse=True)
     get_author_from_cleaned_title_cache()
 
 
-def _try_load_valid_cache(cache_file_path: Path) -> bool:
+def _try_load_titles_from_cache(cache_file_path: Path) -> bool:
     """
     尝试加载有效的缓存
 
     Returns:
         缓存是否成功加载
     """
+
+    # 文件不存在 或者 文件几乎为空
     if not cache_file_path.exists() or cache_file_path.stat().st_size <= 10:
         return False
 
@@ -156,19 +168,21 @@ async def load_or_create_cache(create_cache: bool = False) -> TitlesCache:
     cache_file_path = Path(CACHE_PATH)
 
     # 尝试加载现有缓存
-    if not create_cache and _try_load_valid_cache(cache_file_path):
+    # 加载成功后，如果 JUST_LOAD，则继续扫描，否则就直接退出
+    if not create_cache and _try_load_titles_from_cache(cache_file_path) and not JUST_LOAD:
         return
 
-    # 收集文件系统中的清理后的标题
+    # 加载失败（缓存不存在，或者已失效）
+    # 从文件系统收集
     logger.debug("Collecting cleaned titles from filesystem...")
     cleaned_titles = _collect_cleaned_titles_from_filesystem()
 
-    # 创建并保存新缓存
-    cache = TitlesCache(createTime=datetime.datetime.now(), titles=cleaned_titles)
-    cache.save(cache_file_path)
-
     # 更新全局缓存
     _update_global_cache(cleaned_titles)
+
+    # 保存全局缓存，注意，并不是刚刚收集的
+    cache = TitlesCache(createTime=datetime.datetime.now(), titles=cleaned_title_cache_list)
+    cache.save(cache_file_path)
 
     logger.debug(
         f"Cache created/refreshed with {len(cleaned_title_cache_list)} cleaned titles, "
@@ -177,6 +191,7 @@ async def load_or_create_cache(create_cache: bool = False) -> TitlesCache:
     return cache
 
 
+# 匹配函数
 def check_author_in_title(title: str, author: str):
     return author == "" or author in title
 
@@ -259,14 +274,16 @@ async def query_author(author: str):
 
 async def refresh_cleaned_title_cache():
     global cleaned_title_cache_list
-    while not JUST_LOAD:
+    while True:
         logger.info("Waiting for 12 hours to refresh cleaned title cache...")
         await asyncio.sleep(3600 * 12)  # Refresh every 12 hours
-        cleaned_title_cache_list = []
+        # cleaned_title_cache_list = []
         logger.info("Refresh cache every 12 hours")
         await load_or_create_cache(create_cache=True)
         logger.info(f"Cleaned title cache refreshed, len: {len(cleaned_title_cache_list)}")
 
+
+# FastAPI Server
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -308,6 +325,7 @@ async def updateCacheMiddleware(req: Request, call_next):
     return await call_next(req)
 
 
+# 统计 request 用时
 # @app.middleware('http')
 # async def timeCostMiddleware(req: Request, call_next):
 #     start = datetime.datetime.now()
@@ -320,7 +338,8 @@ async def updateCacheMiddleware(req: Request, call_next):
 @app.get("/")
 @DecoratorCache(timeout=300)
 async def _():
-    return JSONResponse(content={"message": "Hello, World!"})
+    return JSONResponse(content={"message": f"Hello, World! Cache created/refreshed with {len(cleaned_title_cache_list)} cleaned titles, "
+        f"authorCache length: {len(author_cache_list)}"})
 
 
 @app.post("/query/cleaned-title")
@@ -369,6 +388,72 @@ async def _(request: Request):
     logger.debug(f"Find artist for {title} : {author}")
     return JSONResponse(content={"author": author, "match": match_type})
 
+
+# 托盘图标
+myloop = asyncio.new_event_loop()
+uvicorn_server = None
+
+def create_image():
+    """创建一个简单的托盘图标（绿色背景 + 白字 S）"""
+    image = Image.new('RGB', (64, 64), color=(0, 100, 0))
+    dc: ImageDraw.ImageDraw = ImageDraw.Draw(image)
+    # 使用 anchor="mm" 表示以中心点的中间为锚点，让 S 显示在中央
+    dc.text((32, 32), "S", fill=(255, 255, 255), font_size=48, anchor="mm")
+    return image
+
+
+def on_open_web_browser(icon, item):
+    import webbrowser
+    webbrowser.open("http://localhost:8353")
+
+
+def on_refresh_cache(icon, item):
+    asyncio.run_coroutine_threadsafe(load_or_create_cache(create_cache=True), myloop)
+    # 可以考虑在这里弹窗提示，但 pystray 本身没有内置 messagebox
+
+
+def on_exit(icon, item):
+    icon.stop()
+    sys.exit(0)
+
+
+def setup_tray_icon():
+    image = create_image()
+    menu = pystray.Menu(
+        pystray.MenuItem("打开管理页面 (localhost:8353)", on_open_web_browser),
+        pystray.MenuItem("立即刷新缓存", on_refresh_cache),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("退出程序", on_exit)
+    )
+    icon = pystray.Icon("dataserver", image, "server (8353)", menu)
+    icon.run()
+
+
+def run_uvicorn_in_thread():
+    global uvicorn_server
+    # 在单独线程中运行 uvicorn，避免阻塞主线程
+    config = uvicorn.Config(app, host="127.0.0.1", port=8353, log_level="info", reload=True)
+    uvicorn_server = uvicorn.Server(config)
+    myloop.run_until_complete(uvicorn_server.serve())
+
 if __name__ == "__main__":
-    # 只在直接运行时启动 uvicorn
-    uvicorn.run(app, host="localhost", port=8000, log_level="info")
+    inbat = False
+    if "--bat" in sys.argv:
+        inbat = True
+
+    # 启动 FastAPI 服务（在线程中）
+    uvicorn_thread = threading.Thread(target=run_uvicorn_in_thread, daemon=True)
+    uvicorn_thread.start()
+
+    if inbat:
+        # 通过 start.bat 启动，打开托盘图标
+        setup_tray_icon()
+    else:
+        # 直接通过命令行 python dataserver.py 启动，不打开托盘图标
+        # uvicorn_thread.join() # 不 join，直接通过 sleep 循环等待
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            logger.info("Shutting down gracefully...")
+            sys.exit(0)

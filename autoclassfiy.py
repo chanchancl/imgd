@@ -5,12 +5,12 @@ import shutil
 import traceback
 
 from re import search
-from infos import DownloadDir, IgnoredArtist, ArtistAlias
+from infos import SearchPathDir, IgnoredArtist, ArtistAlias
 from pathlib import Path
 from collections import defaultdict, deque
 from utils import Ask, ExitInSeconds, NewFileLogger
 
-ROOT_PATH = DownloadDir
+ROOT_PATH = SearchPathDir
 
 
 cachedir = None
