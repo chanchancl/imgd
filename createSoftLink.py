@@ -3,7 +3,7 @@ from pathlib import Path
 import traceback
 import winshell
 
-from infos import LinkPath
+from config import LinkPath
 
 
 def LinkTo(src: Path, destDir: Path):

@@ -2,7 +2,7 @@ import os
 import sys
 import traceback
 
-from infos import IgnoredArtist
+from config import IgnoredArtist
 from pathlib import Path
 from utils import Ask, ExitInSeconds, NewFileLogger
 
@@ -13,7 +13,7 @@ logger = NewFileLogger(__file__, _DEBUG)
 
 commonArtist = ""
 
-def FindArtistStartIndex(who: str | Path) -> str:
+def findArtistStartIndex(who: str | Path) -> str:
     inputPath = who.name if isinstance(who, Path) else who
     startId, endId = inputPath.find('['), inputPath.find(']')
     if startId == -1 or endId == -1 or startId >= endId:
@@ -28,20 +28,20 @@ def FindArtistStartIndex(who: str | Path) -> str:
 
     if any(ignored in artist for ignored in IgnoredArtist):
         remainingPath = inputPath[endId + 1:]  # no strip !!!!!!!
-        nextStartId, newArtist = FindArtistStartIndex(remainingPath)
+        nextStartId, newArtist = findArtistStartIndex(remainingPath)
         logger.debug(f"Remaining {remainingPath}, {inputPath[endId + nextStartId + 1:]}, {nextStartId}, {endId}")
         return endId + nextStartId + 1, newArtist
     return startId, artist
 
 
-def FormatName(path: str | Path) -> str:
+def formatName(path: str | Path) -> str:
     global commonArtist
     path: Path = path if isinstance(path, Path) else Path(path)
     filename = path.name
 
     logger.debug(f"input : {path}")
 
-    startIdx, artist = FindArtistStartIndex(filename)
+    startIdx, artist = findArtistStartIndex(filename)
     if startIdx == -1 and artist == "":
         if commonArtist == "":
             logger.warning(f"No artist found in {filename}")
@@ -79,7 +79,7 @@ def FormatName(path: str | Path) -> str:
     return ret
 
 
-def ChangeArtistOnly(name: str, artist: str) -> str:
+def changeArtistOnly(name: str, artist: str) -> str:
     withoutArtist = name[name.find(']') + 1:].strip()
     return f"[{artist}] {withoutArtist}"
 
@@ -89,7 +89,7 @@ def formatNameTask(inputPaths: list[Path], noAsk: bool = False):
     failed = False
     mp = {}
     for path in inputPaths:
-        newname = FormatName(path)
+        newname = formatName(path)
         if newname == "":
             logger.error(f"Failed to format {path.name}")
             failed = True
@@ -118,20 +118,20 @@ def main():
         logger.error("Please take parameters as input")
         exit(0)
 
-    #if Ask("Remove group name? (y/N)"):
+    # if Ask("Remove group name? (y/N)"):
     RemoveGroup = True
 
     formatNameTask([Path(x) for x in sys.argv[1:]])
 
 
-def UnitTest():
+def unitTest():
     global RemoveGroup
     RemoveGroup = True
     cases = {
         "(useless) [I'm artist] This is name.zip": "[I'm artist] This is name (useless).zip",
     }
     for raw, expect in cases.items():
-        got = FormatName(raw)
+        got = formatName(raw)
         if got != expect:
             logger.error(f"Expect '{expect}', but got '{got}'")
             input()
@@ -140,7 +140,7 @@ def UnitTest():
         "[I'm artist] This is name.zip": "[new artist] This is name.zip"
     }
     for raw, expect in cases.items():
-        got = ChangeArtistOnly(raw, "new artist")
+        got = changeArtistOnly(raw, "new artist")
         if got != expect:
             logger.error(f"Expect '{expect}', but got '{got}'")
             input()
@@ -148,7 +148,7 @@ def UnitTest():
 
 
 if __name__ == "__main__":
-    UnitTest()
+    unitTest()
     try:
         main()
     except Exception:

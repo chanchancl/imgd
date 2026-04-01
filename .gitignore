@@ -2,11 +2,12 @@
 *.log
 
 .env
+.pytest_cache
 
 __pycache__/
 
-test/
+tmp/
 
 cache/
 
-infos.py
+config.py

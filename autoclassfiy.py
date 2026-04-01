@@ -5,7 +5,7 @@ import shutil
 import traceback
 
 from re import search
-from infos import SearchPathDir, IgnoredArtist, ArtistAlias
+from config import SearchPathDir, IgnoredArtist, ArtistAlias
 from pathlib import Path
 from collections import defaultdict, deque
 from utils import Ask, ExitInSeconds, NewFileLogger
@@ -24,9 +24,9 @@ def Move(src, dst):
     if not DEBUG_MODE:
         try:
             shutil.move(src, dst)
-        except Exception:
+        except (OSError, shutil.Error) as e:
             print("*" * 80)
-            print(f"Exception meet : can't move {src}, {dst} is exist")
+            print(f"Exception meet : can't move {src} to {dst}: {e}")
             print("*" * 80)
 
 

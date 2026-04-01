@@ -9,7 +9,7 @@ from PIL import Image, ImageFile
 from io import BytesIO
 from urllib.parse import unquote
 
-from infos import DownloadDir
+from config import DownloadDir
 
 
 class CustomFormatter(coloredlogs.ColoredFormatter):

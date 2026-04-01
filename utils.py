@@ -56,7 +56,7 @@ def ExitInSeconds(seconds=10):
 
 
 def NewFileLogger(filePath: str, debug: bool = False) -> Logger:
-    logFilePath = Path(filePath).with_suffix('.log').name
+    logFilePath = Path("log") / Path(filePath).with_suffix('.log').name
 
     logger = getLogger(filePath)
     logger.setLevel(DEBUG)

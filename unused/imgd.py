@@ -24,32 +24,32 @@ from datetime import datetime
 from bs4 import BeautifulSoup as bs
 
 
-import infos
+import config
 import utils
 from reduction import ReductionImage
 
-endpoint = infos.Endpoint
-header = utils.BuildHeaderFromStr(infos.HeaderStr)
+endpoint = config.Endpoint
+header = utils.BuildHeaderFromStr(config.HeaderStr)
 
 # 代理地址
-ProxyAddress = infos.ProxyAddress
+ProxyAddress = config.ProxyAddress
 # 下载目录
-DOWNLOAD_DIR = infos.DownloadDir
+DOWNLOAD_DIR = config.DownloadDir
 # 下载线程数
-WORKER_NUM = infos.WorkerThreadNum
+WORKER_NUM = config.WorkerThreadNum
 # 是否对图像进行修复
-Reduction = infos.Reduction
+Reduction = config.Reduction
 # 若文件已经存在，是否重新下载并覆盖
-ForceDownloadIfExist = infos.ReDownload
+ForceDownloadIfExist = config.ReDownload
 # 漫画ID，使用' '分隔
 # 有若干章节的漫画，填到这里，用' '分隔
 # 下载目录的子目录，为空的话则不创建
-DownloadInfo = infos.DownloadInfo
+DownloadInfo = config.DownloadInfo
 
 DefaultSleepTime = 0.1
 BeginOfReductionID = 223301
 
-LogFilePath = infos.LogFilePath
+LogFilePath = config.LogFilePath
 
 progress = Progress(
     SpinnerColumn(),
@@ -319,7 +319,7 @@ async def GetAllComicIdFromAlbum(albumID: str, dest: pathlib.Path, info: dict = 
 async def SaveLog(informations):
     async with aiofiles.open(LogFilePath, "a+", encoding="utf-8") as f:
         for info in informations:
-            if info == infos.EmptyInfo:
+            if info == config.EmptyInfo:
                 continue
             comicIDs = [x for x in info['comicIds'].strip().split(' ')
                         if x != ""]
@@ -332,7 +332,7 @@ async def SaveLog(informations):
 
 async def main():
     for info in DownloadInfo:
-        if info == infos.EmptyInfo:
+        if info == config.EmptyInfo:
             continue
 
         info['time'] = datetime.now().strftime("%Y.%m.%d %T")
