@@ -73,7 +73,7 @@ searchPath = [DownloadPath]
 # Remove cache_middleware log
 cm_logger.remove(0)
 
-logger = NewFileLogger(__file__, True)
+logger = NewFileLogger(__file__, True, True)
 
 # FoundResult
 MATCH_NO      = 0

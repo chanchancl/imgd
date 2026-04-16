@@ -55,7 +55,7 @@ def ExitInSeconds(seconds=10):
         keyboard.remove_hotkey('esc')
 
 
-def NewFileLogger(filePath: str, debug: bool = False) -> Logger:
+def NewFileLogger(filePath: str, debug: bool = False, file_debug=False) -> Logger:
     logFilePath = Path("log") / Path(filePath).with_suffix('.log').name
 
     logger = getLogger(filePath)
@@ -67,7 +67,7 @@ def NewFileLogger(filePath: str, debug: bool = False) -> Logger:
     )
 
     fileHandler = FileHandler(logFilePath, mode='a', encoding='utf-8')
-    fileHandler.setLevel(INFO)
+    fileHandler.setLevel(DEBUG if file_debug else INFO)
     fileHandler.setFormatter(fileFormatter)
 
     # Custom formatter to log raw messages without additional formatting in console
