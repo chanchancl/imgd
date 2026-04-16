@@ -1,0 +1,702 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Data Server Admin</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+        }
+
+        body {
+            margin: 0;
+            padding: 20px;
+            background: #f5f7fa;
+            color: #333;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 40px;
+        }
+
+        h1 {
+            color: #2c3e50;
+            margin-bottom: 10px;
+        }
+
+        .subtitle {
+            color: #7f8c8d;
+            font-size: 1.1rem;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 25px;
+            margin-bottom: 40px;
+        }
+
+        .stat-card {
+            background: white;
+            border-radius: 12px;
+            padding: 25px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+            cursor: pointer;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+            border: 1px solid #e1e8ed;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 6px 16px rgba(0, 0, 0, 0.12);
+        }
+
+        .stat-card h2 {
+            margin-top: 0;
+            color: #34495e;
+            font-size: 1.4rem;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .stat-card h2 i {
+            font-size: 1.8rem;
+        }
+
+        .stat-value {
+            font-size: 3.5rem;
+            font-weight: 700;
+            color: #3498db;
+            margin: 15px 0;
+        }
+
+        .stat-label {
+            color: #7f8c8d;
+            font-size: 1rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .card-footer {
+            margin-top: 20px;
+            font-size: 0.9rem;
+            color: #95a5a6;
+            border-top: 1px solid #eee;
+            padding-top: 15px;
+        }
+
+        .actions {
+            text-align: center;
+            margin: 40px 0;
+        }
+
+        .btn {
+            background: #2ecc71;
+            color: white;
+            border: none;
+            padding: 14px 28px;
+            font-size: 1.1rem;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background 0.2s ease;
+            font-weight: 600;
+            box-shadow: 0 4px 8px rgba(46, 204, 113, 0.3);
+        }
+
+        .btn:hover {
+            background: #27ae60;
+        }
+
+        .btn:active {
+            transform: scale(0.98);
+        }
+
+        .refresh-info {
+            text-align: center;
+            color: #7f8c8d;
+            margin-top: 15px;
+            font-size: 0.95rem;
+        }
+
+        .last-updated {
+            text-align: center;
+            color: #bdc3c7;
+            font-size: 0.9rem;
+            margin-top: 20px;
+        }
+
+        /* Modal */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.7);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .modal-content {
+            background: white;
+            border-radius: 12px;
+            max-width: 800px;
+            width: 100%;
+            max-height: 80vh;
+            overflow: hidden;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+            animation: modalFade 0.3s ease;
+        }
+
+        @keyframes modalFade {
+            from {
+                opacity: 0;
+                transform: translateY(-20px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .modal-header {
+            padding: 20px 25px;
+            border-bottom: 1px solid #eee;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .modal-header h3 {
+            margin: 0;
+            color: #2c3e50;
+            font-size: 1.5rem;
+            flex-shrink: 0;
+        }
+
+        .modal-close {
+            background: none;
+            border: none;
+            font-size: 1.8rem;
+            color: #95a5a6;
+            cursor: pointer;
+            line-height: 1;
+            padding: 0;
+            width: 30px;
+            height: 30px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 50%;
+        }
+
+        .modal-close:hover {
+            background: #f5f5f5;
+            color: #e74c3c;
+        }
+
+        .modal-body {
+            padding: 25px;
+            overflow-y: auto;
+            height: calc(80vh - 80px);
+            min-height: 200px;
+        }
+
+        .list-container {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 20px;
+            height: 100%;
+            overflow-y: auto;
+        }
+
+        .list-item {
+            padding: 12px 15px;
+            border-bottom: 1px solid #e9ecef;
+            font-family: 'Courier New', monospace;
+            font-size: 0.95rem;
+            word-break: break-word;
+        }
+
+        .list-item:last-child {
+            border-bottom: none;
+        }
+
+        .list-item:nth-child(even) {
+            background: #f1f3f5;
+        }
+
+        .empty-list {
+            text-align: center;
+            color: #95a5a6;
+            padding: 40px;
+            font-style: italic;
+        }
+
+        /* Loading spinner */
+        .spinner {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(52, 152, 219, 0.3);
+            border-radius: 50%;
+            border-top-color: #3498db;
+            animation: spin 0.8s linear infinite;
+            margin-right: 10px;
+            vertical-align: middle;
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        .loading {
+            color: #3498db;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        /* Icons using Unicode */
+        .icon {
+            font-size: 1.5em;
+            margin-right: 8px;
+        }
+
+        /* Search box */
+        .search-container {
+            flex: 1;
+            margin: 0 20px;
+            max-width: 400px;
+        }
+
+        .search-box {
+            width: 100%;
+            padding: 10px 15px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 0.95rem;
+            transition: border-color 0.2s ease, box-shadow 0.2s ease;
+            background: #f8f9fa;
+        }
+
+        .search-box:focus {
+            outline: none;
+            border-color: #3498db;
+            box-shadow: 0 0 0 3px rgba(52, 152, 219, 0.2);
+            background: white;
+        }
+
+        .search-box::placeholder {
+            color: #95a5a6;
+        }
+
+        /* Search result counter */
+        .search-result-info {
+            font-size: 0.9rem;
+            color: #7f8c8d;
+            margin-top: 5px;
+            text-align: right;
+        }
+
+        /* Highlight search matches */
+        .highlight {
+            background-color: #fff3cd;
+            font-weight: bold;
+            padding: 2px 4px;
+            border-radius: 3px;
+        }
+
+        /* No results message */
+        .no-results {
+            text-align: center;
+            color: #e74c3c;
+            padding: 30px;
+            font-style: italic;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <header>
+            <h1>📊 Data Server Admin Panel</h1>
+            <p class="subtitle">Monitor and manage your comic database cache</p>
+        </header>
+
+        <div class="stats-grid">
+            <div class="stat-card" id="titles-card" onclick="showTitlesModal()">
+                <h2><span class="icon">📚</span> Titles</h2>
+                <div class="stat-value" id="titles-count">{cache_count}</div>
+                <div class="stat-label">Unique comic titles in cache</div>
+                <div class="card-footer">Click to view all titles</div>
+            </div>
+            <div class="stat-card" id="authors-card" onclick="showAuthorsModal()">
+                <h2><span class="icon">👤</span> Authors</h2>
+                <div class="stat-value" id="authors-count">{author_count}</div>
+                <div class="stat-label">Unique authors extracted</div>
+                <div class="card-footer">Click to view all authors</div>
+            </div>
+        </div>
+
+        <div class="actions">
+            <button class="btn" onclick="refreshCache()">
+                <span id="refresh-btn-text">🔄 Refresh Server Cache</span>
+                <span id="refresh-spinner" class="spinner" style="display: none;"></span>
+            </button>
+            <p class="refresh-info">Page auto‑refreshes every 30 seconds. Last updated: <span
+                    id="last-updated-time">{current_time}</span></p>
+        </div>
+
+        <div class="last-updated">
+            Server time: <span id="server-time">{current_time}</span>
+        </div>
+    </div>
+
+    <!-- Titles Modal -->
+    <div class="modal" id="titles-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>📚 All Titles (<span id="modal-titles-count">0</span>)</h3>
+                <div class="search-container">
+                    <input type="text" class="search-box" id="titles-search" placeholder="Search titles..."
+                        autocomplete="off">
+                    <div class="search-result-info" id="titles-search-info"></div>
+                </div>
+                <button class="modal-close" onclick="closeModal('titles-modal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div id="titles-list-container" class="list-container">
+                    <div class="loading">
+                        <div class="spinner"></div> Loading titles...
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Authors Modal -->
+    <div class="modal" id="authors-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>👤 All Authors (<span id="modal-authors-count">0</span>)</h3>
+                <div class="search-container">
+                    <input type="text" class="search-box" id="authors-search" placeholder="Search authors..."
+                        autocomplete="off">
+                    <div class="search-result-info" id="authors-search-info"></div>
+                </div>
+                <button class="modal-close" onclick="closeModal('authors-modal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div id="authors-list-container" class="list-container">
+                    <div class="loading">
+                        <div class="spinner"></div> Loading authors...
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Global variables
+        let refreshInterval;
+        const REFRESH_INTERVAL_MS = 30000; // 30 seconds
+
+        // Search data storage
+        let allTitles = [];
+        let allAuthors = [];
+        let currentTitlesFilter = '';
+        let currentAuthorsFilter = '';
+
+        // Initialize on load
+        document.addEventListener('DOMContentLoaded', function () {
+            // Initial fetch of stats
+            fetchStats();
+            // Set up auto-refresh
+            refreshInterval = setInterval(fetchStats, REFRESH_INTERVAL_MS);
+
+            // Setup search functionality
+            const titlesSearch = document.getElementById('titles-search');
+            const authorsSearch = document.getElementById('authors-search');
+
+            if (titlesSearch) {
+                titlesSearch.addEventListener('input', function (e) {
+                    currentTitlesFilter = e.target.value;
+                    renderTitlesList(currentTitlesFilter);
+                });
+            }
+
+            if (authorsSearch) {
+                authorsSearch.addEventListener('input', function (e) {
+                    currentAuthorsFilter = e.target.value;
+                    renderAuthorsList(currentAuthorsFilter);
+                });
+            }
+        });
+
+        // Fetch stats from server
+        async function fetchStats() {
+            try {
+                const response = await fetch('/api/stats');
+                if (!response.ok) throw new Error('Failed to fetch stats');
+                const data = await response.json();
+
+                // Update page elements
+                document.getElementById('titles-count').textContent = data.cache_count;
+                document.getElementById('authors-count').textContent = data.author_count;
+                document.getElementById('last-updated-time').textContent = data.current_time;
+                document.getElementById('server-time').textContent = data.current_time;
+
+                // Update modal counts if modals are open
+                const titlesModal = document.getElementById('titles-modal');
+                const authorsModal = document.getElementById('authors-modal');
+
+                if (titlesModal.style.display === 'flex') {
+                    // Titles modal is open, refresh titles list
+                    fetchTitlesList();
+                }
+                if (authorsModal.style.display === 'flex') {
+                    // Authors modal is open, refresh authors list
+                    fetchAuthorsList();
+                }
+            } catch (error) {
+                console.error('Error fetching stats:', error);
+                // Optionally show error message
+            }
+        }
+
+        // Fetch titles list for modal
+        async function fetchTitlesList() {
+            const container = document.getElementById('titles-list-container');
+            container.innerHTML = '<div class="loading"><div class="spinner"></div> Loading titles...</div>';
+
+            try {
+                const response = await fetch('/api/titles');
+                if (!response.ok) throw new Error('Failed to fetch titles');
+                const data = await response.json();
+
+                // Store titles for search
+                allTitles = data.titles || [];
+
+                // Update modal count
+                document.getElementById('modal-titles-count').textContent = allTitles.length;
+
+                // Render list with current filter
+                renderTitlesList(currentTitlesFilter);
+            } catch (error) {
+                console.error('Error fetching titles:', error);
+                container.innerHTML = '<div class="empty-list" style="color:#e74c3c">Error loading titles</div>';
+            }
+        }
+
+        // Render titles list with optional filter
+        function renderTitlesList(filter = '') {
+            const container = document.getElementById('titles-list-container');
+
+            if (!allTitles || allTitles.length === 0) {
+                container.innerHTML = '<div class="empty-list">No titles found in cache</div>';
+                return;
+            }
+
+            const filterLower = filter.toLowerCase();
+            const filteredTitles = filter ? allTitles.filter(title =>
+                title.toLowerCase().includes(filterLower)
+            ) : allTitles;
+
+            // Render list
+            if (filteredTitles.length > 0) {
+                let html = '';
+                filteredTitles.forEach(title => {
+                    const escapedTitle = escapeHtml(title);
+                    const highlightedTitle = filter ?
+                        escapedTitle.replace(
+                            new RegExp(`(${escapeRegExp(filter)})`, 'gi'),
+                            '<span class="highlight">$1</span>'
+                        ) : escapedTitle;
+                    html += `<div class="list-item">${highlightedTitle}</div>`;
+                });
+                container.innerHTML = html;
+            } else {
+                container.innerHTML = `<div class="no-results">No titles found matching "${escapeHtml(filter)}"</div>`;
+            }
+        }
+
+        // Fetch authors list for modal
+        async function fetchAuthorsList() {
+            const container = document.getElementById('authors-list-container');
+            container.innerHTML = '<div class="loading"><div class="spinner"></div> Loading authors...</div>';
+
+            try {
+                const response = await fetch('/api/authors');
+                if (!response.ok) throw new Error('Failed to fetch authors');
+                const data = await response.json();
+
+                // Store authors for search
+                allAuthors = data.authors || [];
+
+                // Update modal count
+                document.getElementById('modal-authors-count').textContent = allAuthors.length;
+
+                // Render list with current filter
+                renderAuthorsList(currentAuthorsFilter);
+            } catch (error) {
+                console.error('Error fetching authors:', error);
+                container.innerHTML = '<div class="empty-list" style="color:#e74c3c">Error loading authors</div>';
+            }
+        }
+
+        // Render authors list with optional filter
+        function renderAuthorsList(filter = '') {
+            const container = document.getElementById('authors-list-container');
+            if (!allAuthors || allAuthors.length === 0) {
+                container.innerHTML = '<div class="empty-list">No authors found in cache</div>';
+                return;
+            }
+
+            const filterLower = filter.toLowerCase();
+            const filteredAuthors = filter ? allAuthors.filter(author =>
+                author.toLowerCase().includes(filterLower)
+            ) : allAuthors;
+
+
+            // Render list
+            if (filteredAuthors.length > 0) {
+                let html = '';
+                filteredAuthors.forEach(author => {
+                    const escapedAuthor = escapeHtml(author);
+                    const highlightedAuthor = filter ?
+                        escapedAuthor.replace(
+                            new RegExp(`(${escapeRegExp(filter)})`, 'gi'),
+                            '<span class="highlight">$1</span>'
+                        ) : escapedAuthor;
+                    html += `<div class="list-item">${highlightedAuthor}</div>`;
+                });
+                container.innerHTML = html;
+            } else {
+                container.innerHTML = `<div class="no-results">No authors found matching "${escapeHtml(filter)}"</div>`;
+            }
+        }
+
+        // Show titles modal
+        function showTitlesModal() {
+            const modal = document.getElementById('titles-modal');
+            modal.style.display = 'flex';
+            // Reset search
+            currentTitlesFilter = '';
+            const searchInput = document.getElementById('titles-search');
+            if (searchInput) {
+                searchInput.value = '';
+                // Focus search input after a short delay
+                setTimeout(() => searchInput.focus(), 100);
+            }
+            fetchTitlesList();
+        }
+
+        // Show authors modal
+        function showAuthorsModal() {
+            const modal = document.getElementById('authors-modal');
+            modal.style.display = 'flex';
+            // Reset search
+            currentAuthorsFilter = '';
+            const searchInput = document.getElementById('authors-search');
+            if (searchInput) {
+                searchInput.value = '';
+                // Focus search input after a short delay
+                setTimeout(() => searchInput.focus(), 100);
+            }
+            fetchAuthorsList();
+        }
+
+        // Close modal
+        function closeModal(modalId) {
+            document.getElementById(modalId).style.display = 'none';
+        }
+
+        // Close modal when clicking outside content
+        window.onclick = function (event) {
+            const titlesModal = document.getElementById('titles-modal');
+            const authorsModal = document.getElementById('authors-modal');
+
+            if (event.target === titlesModal) {
+                closeModal('titles-modal');
+            }
+            if (event.target === authorsModal) {
+                closeModal('authors-modal');
+            }
+        }
+
+        // Refresh server cache
+        async function refreshCache() {
+            const btnText = document.getElementById('refresh-btn-text');
+            const spinner = document.getElementById('refresh-spinner');
+
+            // Show loading state
+            btnText.textContent = ' Refreshing...';
+            spinner.style.display = 'inline-block';
+
+            try {
+                const response = await fetch('/refresh-cache', {
+                    method: 'POST'
+                });
+
+                if (!response.ok) throw new Error('Refresh failed');
+                const result = await response.json();
+
+                if (result.success) {
+                    // Success - update stats
+                    btnText.textContent = '✅ Cache Refreshed';
+                    fetchStats();
+
+                    // Revert button text after 3 seconds
+                    setTimeout(() => {
+                        btnText.textContent = '🔄 Refresh Server Cache';
+                        spinner.style.display = 'none';
+                    }, 3000);
+                } else {
+                    throw new Error(result.message || 'Refresh failed');
+                }
+            } catch (error) {
+                console.error('Cache refresh error:', error);
+                btnText.textContent = '❌ Refresh Failed';
+                spinner.style.display = 'none';
+
+                // Revert button text after 3 seconds
+                setTimeout(() => {
+                    btnText.textContent = '🔄 Refresh Server Cache';
+                }, 3000);
+            }
+        }
+
+        // Helper: escape special regex characters
+        function escapeRegExp(string) {
+            return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        }
+
+        // Helper: escape HTML to prevent XSS
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+    </script>
+</body>
+
+</html>

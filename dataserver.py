@@ -359,11 +359,12 @@ async def query_match_title(input_title: str, input_author: str = "") -> tuple[i
 
 
 async def query_author(author: str):
+    lower_author = author.lower()
     for cached_author in author_cache_list:
-        if author == cached_author:
+        if lower_author == cached_author:
             return MATCH_EXACTLY
     for cached_author in author_cache_list:
-        if author in cached_author:
+        if lower_author in cached_author:
             return MATCH_PART
     return MATCH_NO
 
@@ -390,7 +391,6 @@ def get_author_from_cleaned_title_cache():
 
 
 # FastAPI Server
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # start
