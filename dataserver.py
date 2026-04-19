@@ -73,7 +73,7 @@ searchPath = [DownloadPath]
 # Remove cache_middleware log
 cm_logger.remove(0)
 
-logger = NewFileLogger(__file__, True, True)
+logger = NewFileLogger(__file__, True)
 
 # FoundResult
 MATCH_NO      = 0
@@ -118,17 +118,13 @@ def _collect_cleaned_titles_from_filesystem() -> list[str]:
     names_set = set()
     root_path = SearchPathDir
 
-    # 使用 os.walk() 替代 Path.walk() 提高性能
     if os.path.exists(root_path):
         for root, dirs, files in os.walk(root_path):
             # 跳过根目录本身
             if root == root_path:
-                # 添加当前目录的直接子目录
                 names_set.update(dirs)
                 continue
 
-            # 添加当前目录的子目录名（相对路径的最后一部分）
-            # os.walk 返回的 dirs 已经是目录名，不是完整路径
             names_set.update(dirs)
 
             # 处理文件
@@ -140,14 +136,10 @@ def _collect_cleaned_titles_from_filesystem() -> list[str]:
 
     # 从搜索路径收集
     for search_dir in searchPath:
-        if os.path.exists(search_dir):
-            try:
-                for entry in os.scandir(search_dir):
-                    if entry.is_file() and entry.name.endswith('.zip'):
-                        stem = os.path.splitext(entry.name)[0]
-                        names_set.add(stem)
-            except (OSError, PermissionError):
-                logger.warning(f"无法访问搜索目录: {search_dir}")
+        for entry in os.scandir(search_dir):
+            if entry.is_file() and entry.name.endswith('.zip'):
+                stem = os.path.splitext(entry.name)[0]
+                names_set.add(stem)
 
     # 排序并返回列表（逆序）
     return sorted(names_set, reverse=True)
@@ -248,6 +240,9 @@ def extract_number_from_string(s: str) -> int | None:
 
 
 def extract_number_range_from_string(s: str) -> tuple[int, int] | None:
+    if '-' not in s and '~' not in s:
+        return None
+
     match = re.search(r'(\d+)\s?[~-]\s?(\d+)(?!\S)', s)
     if match:
         start = int(match.group(1))
@@ -264,19 +259,17 @@ def exactly_match(cached_title: str, input_title: str) -> tuple[bool, str]:
     # quick
     if input_title in cached_title:
         return True, cached_title
-
     # suffix range match
     range_match = extract_number_range_from_string(cached_title)
-    if range_match:
-        range_start, range_end = range_match
-        query_number = extract_number_from_string(input_title)
-        query_without_number = re.sub(r'(?<!\S)\d+(?!\S)', '', input_title)
-        query_without_number = re.sub(r'(\D+?)\d+', r'\1', query_without_number).strip()
-        if query_without_number in cached_title:
-            if query_number is not None:
-                if range_start <= query_number <= range_end:
-                    if query_without_number and query_without_number in cached_title:
-                        return True, cached_title
+    if not range_match:
+        return False, ""
+
+    range_start, range_end = range_match
+    query_number = extract_number_from_string(input_title)
+    if query_number is not None and range_start <= query_number <= range_end:
+        query_without_number = input_title.replace(str(query_number), "")
+        if query_without_number and query_without_number in cached_title:
+            return True, cached_title
 
     return False, ""
 
@@ -385,6 +378,7 @@ def get_author_from_cleaned_title_cache():
         author_cache_list.clear()
         for cleaned_title in cleaned_title_cache_list:
             author = FindArtistV2(cleaned_title)
+            author = author.strip().lower()
             if len(author) == 0 or author in author_cache_list:
                 continue
             author_cache_list.append(author)
@@ -677,7 +671,6 @@ def maybe_start_tray():
         # 确保 myloop 在后台运行以处理回调
         start_myloop_background()
         start_tray_in_thread()
-        _tray_started = True
 
 
 def check_singleton() -> bool:
