@@ -256,20 +256,21 @@ def exactly_match(cached_title: str, input_title: str) -> tuple[bool, str]:
     if not cached_title or not input_title:
         return False, ""
 
-    # quick
     if input_title in cached_title:
         return True, cached_title
-    # suffix range match
+
     range_match = extract_number_range_from_string(cached_title)
     if not range_match:
         return False, ""
 
     range_start, range_end = range_match
     query_number = extract_number_from_string(input_title)
-    if query_number is not None and range_start <= query_number <= range_end:
-        query_without_number = input_title.replace(str(query_number), "")
-        if query_without_number and query_without_number in cached_title:
-            return True, cached_title
+    if query_number is None or query_number < range_start or query_number > range_end:
+        return False, ""
+
+    query_without_number = input_title.replace(str(query_number), "")
+    if query_without_number and query_without_number in cached_title:
+        return True, cached_title
 
     return False, ""
 
@@ -282,15 +283,11 @@ def part_match(cached_title: str, input_title: str) -> tuple[bool, str]:
     if len(input_title) < PART_MATCH_LENGTH_THRESHOLD:
         threshold = PART_MATCH_THRESHOLD_SHORT
 
-    n = len(input_title)
-    min_len = math.ceil(n * threshold)
+    min_len = math.ceil(len(input_title) * threshold)
 
-    # 枚举长度为 min_len - n 之间的input_title所有子串
-    for length in range(n, min_len - 1, -1):
-        for start in range(n - length + 1):
-            substr = input_title[start:start + length]
-            if substr in cached_title:
-                return True, substr
+    match = difflib.SequenceMatcher(None, input_title, cached_title).find_longest_match()
+    if match.size >= min_len:
+        return True, input_title[match.a:match.a + match.size]
 
     return False, ""
 
@@ -302,9 +299,7 @@ def fuzz_match(cached_titles: list[str], input_title: str, input_author: str) ->
     matches = difflib.get_close_matches(input_title, cached_titles, n=3, cutoff=threshold)
     for fuzzy_match in matches:
         if not check_author_in_title(fuzzy_match, input_author):
-            logger.debug(f"fuzzy match : {fuzzy_match}, but author not found : {input_author}")
             continue
-        logger.debug(f"Query Title {input_title}, fuzzy match found {fuzzy_match}")
         return True, fuzzy_match
     return False, ""
 
