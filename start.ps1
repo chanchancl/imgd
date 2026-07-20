@@ -46,6 +46,7 @@ if (-not $HideWindow) {
 # 运行 uvicorn
 try {
     # 设置环境变量以启用托盘图标
+    $env:TRAY_ICON = "true"
     uvicorn dataserver:app --host 127.0.0.1 --port 8353 --reload
 } catch {
     exit 1

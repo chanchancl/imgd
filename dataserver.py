@@ -110,8 +110,6 @@ CACHE_REFRESH_INTERVAL_SECONDS = 3600 * 12  # 12 hours
 DEBUG = False
 ENABLE_TRIGRAM_INDEX = True
 
-is_reload = True
-
 # MatchStatus
 MATCH_NO      = 0
 MATCH_FUZZY   = 1
@@ -143,7 +141,6 @@ class CacheStore:
         self.titles: list[str] = []
         self.authors: list[str] = []
         self.trigram_index: dict[str, frozenset[int]] = {}
-        self.title_trigrams: list[frozenset[str]] = []
         self.last_update_time = datetime.datetime.now()
 
     # ================================================================
@@ -151,11 +148,6 @@ class CacheStore:
     # ================================================================
 
     def _update(self, cleaned_titles: list[str]) -> None:
-        """用新的标题列表更新 titles / trigram_index / authors。
-
-        所有 CPU 密集计算在锁外完成，仅最终赋值时短暂持锁。
-        """
-        # Phase 1: 构建新状态（无锁，纯本地计算）
         if JUST_LOAD:
             existing = list(self.titles)
             merged = existing + cleaned_titles
@@ -166,9 +158,9 @@ class CacheStore:
         new_titles = sorted(set(new_titles), reverse=True)
 
         if ENABLE_TRIGRAM_INDEX:
-            new_trigram_index, new_title_trigrams = _build_trigram_index(new_titles)
+            new_trigram_index = _build_trigram_index(new_titles)
         else:
-            new_trigram_index, new_title_trigrams = {}, []
+            new_trigram_index = {}
 
         new_authors: list[str] = []
         for title in new_titles:
@@ -176,16 +168,23 @@ class CacheStore:
             if author and author not in new_authors:
                 new_authors.append(author)
 
-        # Phase 2: 原子替换（短暂持锁）
         with self.lock:
             self.titles = new_titles
             self.trigram_index = new_trigram_index
-            self.title_trigrams = new_title_trigrams
             self.authors = new_authors
 
     # ================================================================
     # 加载 / 刷新
     # ================================================================
+
+    async def refresh_loop(self) -> None:
+        """后台循环：每隔 CACHE_REFRESH_INTERVAL_SECONDS 刷新一次缓存。"""
+        while True:
+            logger.info("Waiting for 12 hours to refresh cleaned title cache...")
+            await asyncio.sleep(CACHE_REFRESH_INTERVAL_SECONDS)
+            logger.info("Refresh cache every 12 hours")
+            await self.load_or_create(create_cache=True)
+            logger.info(f"Cleaned title cache refreshed, len: {len(self.titles)}")
 
     def load_from_file(self, cache_file_path: Path) -> bool:
         """尝试从 JSON 文件加载有效缓存。成功返回 True。"""
@@ -237,15 +236,6 @@ class CacheStore:
         )
         return cache
 
-    async def refresh_loop(self) -> None:
-        """后台循环：每隔 CACHE_REFRESH_INTERVAL_SECONDS 刷新一次缓存。"""
-        while True:
-            logger.info("Waiting for 12 hours to refresh cleaned title cache...")
-            await asyncio.sleep(CACHE_REFRESH_INTERVAL_SECONDS)
-            logger.info("Refresh cache every 12 hours")
-            await self.load_or_create(create_cache=True)
-            logger.info(f"Cleaned title cache refreshed, len: {len(self.titles)}")
-
 
 # --- 模块级纯函数（不访问 CacheStore 状态）---
 
@@ -254,49 +244,32 @@ def _collect_cleaned_titles_from_filesystem() -> list[str]:
     names_set = set()
     root_path = SearchPathDir
 
-    if os.path.exists(root_path):
-        for root, dirs, files in os.walk(root_path):
-            # 跳过根目录本身
-            if root == root_path:
-                names_set.update(dirs)
-                continue
+    if not os.path.exists(root_path):
+        return set()
 
-            names_set.update(dirs)
+    for _, dirs, files in os.walk(root_path):
+        names_set.update(dirs)
 
-            # 处理文件
-            for filename in files:
-                if filename.endswith(('.zip', '.rar')):
-                    # 获取不带扩展名的文件名
-                    stem = os.path.splitext(filename)[0]
-                    names_set.add(stem)
+        for filename in files:
+            if filename.endswith(('.zip', '.rar')):
+                names_set.add(os.path.splitext(filename)[0])
 
     # 从搜索路径收集
     for search_dir in searchPath:
         for entry in os.scandir(search_dir):
             if entry.is_file() and entry.name.endswith('.zip'):
-                stem = os.path.splitext(entry.name)[0]
-                names_set.add(stem)
+                names_set.add(os.path.splitext(entry.name)[0])
 
     # 排序并返回列表（逆序）
     return sorted(names_set, reverse=True)
 
 
 def _build_trigram_index(titles: list[str]) -> tuple[dict[str, frozenset[int]], list[frozenset[str]]]:
-    """从标题列表中构建 trigram 索引。
-
-    为每个标题提取所有连续的 3 字符序列(trigram),
-    构建从 trigram 到包含该 trigram 的标题索引集合的映射。
-
-    Args:
-        titles: 去重排序后的标题列表
-
-    Returns:
-        (trigram_index, title_trigrams) 的元组:
-        - trigram_index: trigram → 包含该 trigram 的标题索引的 frozenset
-        - title_trigrams: 每个标题所包含的 trigram 的 frozenset 列表
+    """
+        构建 trigram 索引：将每个 trigram 映射到包含它的标题索引集合。
+        gram -> idx of title include gram
     """
     trigram_to_indices: dict[str, set[int]] = {}
-    per_title: list[set[str]] = []
 
     for idx, title in enumerate(titles):
         title_grams = _extract_ngrams(title)
@@ -304,12 +277,10 @@ def _build_trigram_index(titles: list[str]) -> tuple[dict[str, frozenset[int]], 
             if gram not in trigram_to_indices:
                 trigram_to_indices[gram] = set()
             trigram_to_indices[gram].add(idx)
-        per_title.append(title_grams)
 
     # 冻结为不可变结构，允许无锁安全读取
     trigram_index = {g: frozenset(indices) for g, indices in trigram_to_indices.items()}
-    title_trigrams = [frozenset(s) for s in per_title]
-    return trigram_index, title_trigrams
+    return trigram_index
 
 
 # --- 模块级单例 ---
@@ -322,12 +293,11 @@ cache_store = CacheStore()
 
 # 数字范围分隔符归一化表：将所有变体统一映射到 '-'
 _RANGE_SEP_TRANS = str.maketrans({
-    '～': '-',  # ～ fullwidth tilde
-    '〜': '-',  # 〜 wave dash (日文)
-    '－': '-',  # － fullwidth hyphen-minus
-    '~': '-',  # ~ ascii tilde
+    '～': '-',
+    '〜': '-',
+    '－': '-',
+    '~': '-',
 })
-
 
 def _normalize_range_separators(s: str) -> str:
     """将各种数字范围分隔符统一转换为 '-'，确保缓存和输入一致匹配。"""
@@ -339,21 +309,14 @@ def check_author_in_title(title: str, author: str):
 
 
 def extract_number_from_string(s: str) -> int | None:
-    """从字符串中提取卷号/数字。
-
-    优先匹配卷号模式（v01, Vol.1, #01），
-    其次尝试最后一个空格分隔的含数字 token，
-    最后尝试任意位置的数字。
+    """从字符串中提取数字。
+        尝试最后一个空格分隔的含数字 token
+        尝试任意位置的数字。
     """
-    # 优先：卷号模式 v01 / Vol.1 / #01
-    m = re.search(r'(?i)\b(?:v|vol\.?\s*)(\d+)', s)
-    if m:
-        return int(m.group(1))
     m = re.search(r'#(\d+)', s)
     if m:
         return int(m.group(1))
 
-    # 其次：从右向左找空格分隔的含数字 token
     parts = s.split(' ')
     for p in reversed(parts):
         m = re.search(r'\d+', p)
@@ -394,29 +357,29 @@ def extract_number_range_from_string(s: str) -> tuple[int, int] | None:
 
 def exactly_match(cached_title: str, input_title: str) -> tuple[bool, str]:
     if not cached_title or not input_title:
-        return False, ""
+        return False
 
     # 归一化：统一分隔符，让 1-3 / 1~3 / 1～3 等价
     nc = _normalize_range_separators(cached_title)
     ni = _normalize_range_separators(input_title)
 
     if ni in nc:
-        return True, cached_title
+        return True
 
     range_match = extract_number_range_from_string(nc)
     if not range_match:
-        return False, ""
+        return False
 
     range_start, range_end = range_match
     query_number = extract_number_from_string(ni)
     if query_number is None or query_number < range_start or query_number > range_end:
-        return False, ""
+        return False
 
     query_without_number = ni.replace(str(query_number), "")
     if query_without_number and query_without_number in nc:
-        return True, cached_title
+        return True
 
-    return False, ""
+    return False
 
 
 def part_match(cached_title: str, input_title: str) -> tuple[bool, str]:
@@ -457,7 +420,7 @@ def _extract_ngrams(s: str, n: int = 3) -> set[str]:
 
     Args:
         s: 输入字符串
-        n: n-gram 的长度，默认 3（trigram）
+        n: n-gram 的长度，默认 3 trigram
 
     Returns:
         n-gram 集合；若 s 长度不足 n 则返回空集合
@@ -470,8 +433,8 @@ def _extract_ngrams(s: str, n: int = 3) -> set[str]:
 def _exact_candidates(input_title: str) -> list[int]:
     """返回包含 input_title 全部 trigram 的标题索引列表。
 
-    这是子字符串匹配的必要条件：如果 input_title 是某个 cached_title
-    的子字符串，那么 input_title 的所有 trigram 必须都出现在该 cached_title 中。
+    如果 input_title 是某个 cached_title 的子字符串
+    那么 input_title 的所有 trigram 必须都出现在该 cached_title 中。
     若输入长度不足 3 个字符，则回退到全量扫描。
 
     Args:
@@ -561,7 +524,7 @@ async def query_match_title(input_title: str, input_author: str = "") -> tuple[i
     # 使用 trigram 交集过滤：候选标题必须包含 input_title 的全部 trigram
     for idx in _exact_candidates(input_title):
         cached_title = cached_titles[idx]
-        ok, matched = exactly_match(cached_title, input_title)
+        ok = exactly_match(cached_title, input_title)
         if ok and check_author_in_title(cached_title, input_author):
             match_status = MATCH_EXACTLY
             matched_title = cached_title
@@ -570,7 +533,9 @@ async def query_match_title(input_title: str, input_author: str = "") -> tuple[i
     # PART MATCH, input_title 与 cached_title 有足够长的公共子串
     # 使用 trigram 并集过滤：候选标题只需包含 input_title 的任一 trigram
     if not match_status:
-        for idx in _fuzzy_candidates(input_title):
+        fuzz = _fuzzy_candidates(input_title)
+        # print(f"fuzz/total : {len(fuzz)}/{len(cached_titles)}, {len(fuzz) / (len(cached_titles) or 1):.2%}")
+        for idx in fuzz:
             cached_title = cached_titles[idx]
             ok, matched = part_match(cached_title, input_title)
             if ok and check_author_in_title(cached_title, input_author):
@@ -582,8 +547,7 @@ async def query_match_title(input_title: str, input_author: str = "") -> tuple[i
     # FUZZY MATCH, 使用 difflib.get_close_matches 进行模糊匹配
     # 同样使用 trigram 并集过滤，仅在候选子集上运行昂贵的模糊匹配
     if not match_status:
-        candidate_indices = _fuzzy_candidates(input_title)
-        candidate_titles = [cached_titles[i] for i in candidate_indices]
+        candidate_titles = [cached_titles[i] for i in fuzz]
         ok, matched = fuzz_match(candidate_titles, input_title, input_author)
         if ok and check_author_in_title(cached_title, input_author):
             match_status = MATCH_FUZZY
@@ -614,7 +578,7 @@ async def query_author(author: str):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # start
-    logger.debug(f"Reload mode : {is_reload}")
+    logger.debug(f"Managed by uvicorn: {os.environ.get('TRAY_ICON', '0') == '1'}")
     await cache_store.load_or_create()
     asyncio.create_task(cache_store.refresh_loop())
 
@@ -651,7 +615,7 @@ async def updateCacheMiddleware(req: Request, call_next):
         cache_store.last_update_time = current_time
         logger.debug(f"Refresh cache due to {CACHE_MIN_REFRESH_INTERVAL_HOURS} hour passed since last query")
         await cache_store.load_or_create(create_cache=True)
-        memory_backend.close()
+        await memory_backend.close()
 
     return await call_next(req)
 
@@ -672,8 +636,10 @@ async def _():
     return JSONResponse(content={"message": f"Hello, World! Cache created/refreshed with {len(cache_store.titles)} cleaned titles, "
         f"authorCache length: {len(cache_store.authors)}"})
 
+
 def make_response(match_status: int, match_title: str):
     return JSONResponse(content={"title": match_title, "match": match_status})
+
 
 @app.post("/query/match-title")
 @DCache(timeout=300)
@@ -788,6 +754,8 @@ async def _(request: Request):
     results = []
     for i, result in enumerate(gathered):
         if isinstance(result, Exception):
+            import traceback
+            traceback.print_exception(result)
             logger.error(
                 f"Batch request error for '{requests_list[i].get('type', '')}': {result}"
             )
@@ -907,11 +875,11 @@ async def admin_dashboard():
 # 模块 7: 服务器生命周期管理 — Server Lifecycle
 # ============================================================
 
-class ServerRunner:
-    """管理 FastAPI 服务器 + 系统托盘 + 事件循环的完整生命周期。
+class ServerManager:
+    """FastAPI 服务器生命周期管理器。
 
-    将原来分散的 myloop、uvicorn_server 全局变量以及托盘函数、
-    启动流程收拢为一个类，消除 global 声明，使启动/停止逻辑内聚。
+    统一管理事件循环、服务器启动和系统托盘。
+    使启动/停止逻辑内聚。
     """
 
     def __init__(self, app: FastAPI, host: str = "127.0.0.1", port: int = 8353):
@@ -920,32 +888,25 @@ class ServerRunner:
         self.port = port
         self.loop = asyncio.new_event_loop()
         self.uvicorn_server: uvicorn.Server | None = None
+        self._managed_by_uvicorn = False  # 替代原来的 is_reload 模块全局变量
 
     # ================================================================
     # 事件循环 / uvicorn
     # ================================================================
 
-    def run_uvicorn(self) -> None:
-        """在 self.loop 中运行 uvicorn 服务器（阻塞当前线程）。"""
+    def _serve(self) -> None:
+        """在事件循环中运行 uvicorn 服务器（阻塞调用线程）。"""
         config = uvicorn.Config(
-            self.app, host=self.host, port=self.port,
-            log_level="info", reload=True
+            self.app, host=self.host, port=self.port, log_level="info"
         )
         self.uvicorn_server = uvicorn.Server(config)
         self.loop.run_until_complete(self.uvicorn_server.serve())
 
-    def start_loop_in_background(self) -> None:
-        """在后台线程中启动 self.loop，用于托盘图标回调。"""
-        if not self.loop.is_running():
-            def run_loop():
-                self.loop.run_forever()
-            loop_thread = threading.Thread(target=run_loop, daemon=True)
-            loop_thread.start()
-            logger.debug("Started event loop in background thread for tray callbacks")
 
     # ================================================================
     # 托盘图标
     # ================================================================
+
 
     @staticmethod
     def _create_tray_image() -> Image.Image:
@@ -974,7 +935,7 @@ class ServerRunner:
 
     def _on_exit(self, icon, item) -> None:
         icon.stop()
-        if is_reload:
+        if self._managed_by_uvicorn:
             parent_pid = os.getppid()
             os.kill(parent_pid, signal.SIGTERM)
         self_pid = os.getpid()
@@ -1000,8 +961,9 @@ class ServerRunner:
         icon = pystray.Icon("dataserver", image, f"server ({self.port})", make_menu())
         icon.run()
 
-    def start_tray_in_thread(self) -> threading.Thread:
-        """在后台线程中启动托盘图标。"""
+    def start_tray(self) -> threading.Thread:
+        """在后台线程启动系统托盘图标（用于 uvicorn --reload 模式）。"""
+        self._managed_by_uvicorn = True
         tray_thread = threading.Thread(target=self._setup_tray, daemon=True)
         tray_thread.start()
         return tray_thread
@@ -1010,16 +972,22 @@ class ServerRunner:
     # 启动入口
     # ================================================================
 
-    def start(self, with_tray: bool = False) -> None:
-        """按模式启动服务器。
+    def run(self) -> None:
+        """直接启动服务器（python dataserver.py 路径）。
 
-        Args:
-            with_tray: 是否同时启动系统托盘图标（uvicorn reload 模式）
+        在守护线程中启动 uvicorn，主线程保持进程存活直到被中断。
         """
-        if with_tray:
-            logger.debug("Starting tray icon due to uvicorn reload mode")
-            self.start_loop_in_background()
-            self.start_tray_in_thread()
+        if check_singleton(self.port):
+            sys.exit(0)
+        self._managed_by_uvicorn = False
+        server_thread = threading.Thread(target=self._serve, daemon=True)
+        server_thread.start()
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            logger.info("Shutting down gracefully...")
+            sys.exit(0)
 
 
 # --- 模块级工具函数 ---
@@ -1043,7 +1011,7 @@ def check_singleton(port: int = 8353) -> bool:
 
 
 # --- 模块级单例 ---
-runner = ServerRunner(app, host="127.0.0.1", port=8353)
+server = ServerManager(app, host="127.0.0.1", port=8353)
 
 
 # ============================================================
@@ -1051,22 +1019,7 @@ runner = ServerRunner(app, host="127.0.0.1", port=8353)
 # ============================================================
 
 if __name__ == "__main__":
-    # run by python dataserver.py
-    if check_singleton():
-        sys.exit(0)
-
-    is_reload = False
-
-    # 启动 FastAPI 服务（在线程中）
-    uvicorn_thread = threading.Thread(target=runner.run_uvicorn, daemon=True)
-    uvicorn_thread.start()
-
-    try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        logger.info("Shutting down gracefully...")
-        sys.exit(0)
+    server.run()
 else:
-    # run by uvicorn
-    runner.start(with_tray=True)
+    if os.environ.get("TRAY_ICON", "false") == "true":
+        server.start_tray()
