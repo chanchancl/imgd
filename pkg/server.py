@@ -1,45 +1,50 @@
 """服务器 — FastAPI app、路由、中间件、ServerManager、check_singleton"""
 
-import os
-import sys
-import json
-import time
-import socket
-import signal
 import asyncio
-import threading
 import datetime
-import webbrowser
+import json
+import os
+import signal
+import socket
+import sys
+import threading
+import time
 import traceback
-from pathlib import Path
+import webbrowser
 from contextlib import asynccontextmanager
+from pathlib import Path
 
-import uvicorn
 import pystray
-from PIL import Image, ImageDraw
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, HTMLResponse
+import uvicorn
+from cache_middleware import CacheMiddleware, MemoryBackend
+from cache_middleware import cache as DCache
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-
-from cache_middleware import CacheMiddleware, MemoryBackend, cache as DCache
+from fastapi.responses import HTMLResponse, JSONResponse
+from PIL import Image, ImageDraw
 
 from config import IgnoredNames
-from autoclassfiy import FindArtistV2
-
-from pkg.constants import (
-    MATCH_NO,
-    MATCH_EXACTLY,
-    CACHE_MIN_REFRESH_INTERVAL_HOURS,
-    DEBUG,
-    logger,
-)
 from pkg.cache import cache_store
-from pkg.query import query_match_title, query_author, _process_batch_request
-
+from pkg.constants import (
+    CACHE_MIN_REFRESH_INTERVAL_HOURS,
+    ENABLE_DCACHE,
+    ENABLE_RECORD_BATCH_REQUEST,
+    MATCH_EXACTLY,
+    MATCH_NO,
+    logger,
+    now_cst,
+)
+from pkg.query import (
+    extract_artist,
+    process_batch_request,
+    query_author,
+    query_match_title,
+)
 
 # ============================================================
 # FastAPI 应用与生命周期
 # ============================================================
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -57,8 +62,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-memory_backend = MemoryBackend(max_size=1000)
-if not DEBUG:
+if ENABLE_DCACHE:
+    memory_backend = MemoryBackend(max_size=1000)
     app.add_middleware(CacheMiddleware, backend=memory_backend)
 
 
@@ -77,33 +82,56 @@ app.add_middleware(
 # 中间件
 # ============================================================
 
-@app.middleware('http')
+# 防止多个请求同时触发缓存刷新
+_refresh_lock = asyncio.Lock()
+
+
+@app.middleware("http")
 async def updateCacheMiddleware(req: Request, call_next):
-    current_time = datetime.datetime.now()
+    current_time = now_cst()
     elapsed_time = current_time - cache_store.last_update_time
     refresh_interval = datetime.timedelta(hours=CACHE_MIN_REFRESH_INTERVAL_HOURS)
     if elapsed_time > refresh_interval:
-        cache_store.last_update_time = current_time
-        logger.debug(f"Refresh cache due to {CACHE_MIN_REFRESH_INTERVAL_HOURS} hour passed since last query")
-        await cache_store.load_or_create(create_cache=True)
-        await memory_backend.close()
+        async with _refresh_lock:
+            # 双重检查：获取锁后再次确认是否需要刷新
+            if (now_cst() - cache_store.last_update_time) > refresh_interval:
+                cache_store.last_update_time = now_cst()
+                logger.debug(
+                    f"Refresh cache due to {CACHE_MIN_REFRESH_INTERVAL_HOURS} hour passed since last query"
+                )
+                await cache_store.load_or_create(create_cache=True)
+                await memory_backend.close()
 
     return await call_next(req)
 
 
 # 统计 request 用时
-@app.middleware('http')
+@app.middleware("http")
 async def timeCostMiddleware(req: Request, call_next):
-    start = datetime.datetime.now()
-    rsp = await call_next(req)
-    eplased = datetime.datetime.now() - start
-    logger.debug(f"Query use {eplased}")
+    body = await req.json() if req.method in ("POST", "PUT", "PATCH") else None
+    start = now_cst()
+    rsp: Response = await call_next(req)
+    eplased = now_cst() - start
+    logger.debug(f"Query use {eplased.microseconds / 1000}ms")
+
+    if (
+        ENABLE_RECORD_BATCH_REQUEST
+        and req.url.path.startswith("/query/batch")
+        and body is not None
+        and eplased.microseconds / 1000 >= 150
+    ):
+        record = {"req_body": json.dumps(body), "timeused": eplased.microseconds / 1000}
+        with open("tmp/batch_record.json", "+a", encoding="utf-8") as fp:  # noqa: ASYNC230
+            json.dump(record, fp)
+            fp.write("\n")
+
     return rsp
 
 
 # ============================================================
 # 辅助函数
 # ============================================================
+
 
 def make_response(match_status: int, match_title: str) -> JSONResponse:
     return JSONResponse(content={"title": match_title, "match": match_status})
@@ -113,20 +141,24 @@ def make_response(match_status: int, match_title: str) -> JSONResponse:
 # API 路由
 # ============================================================
 
+
 @app.get("/")
 @DCache(timeout=300)
 async def root_endpoint():
-    return JSONResponse(content={
-        "message": f"Hello, World! Cache created/refreshed with {len(cache_store.titles)} cleaned titles, "
-        f"authorCache length: {len(cache_store.authors)}"
-    })
+    return JSONResponse(
+        content={
+            "message": "Hello, World! Cache created/refreshed with"
+            f" {len(cache_store.titles)} cleaned titles,"
+            f" authorCache length: {len(cache_store.authors)}"
+        }
+    )
 
 
 @app.post("/query/match-title")
 @DCache(timeout=300)
 async def match_title_endpoint(request: Request):
     data: dict = await request.json()
-    in_author = data.get('author')
+    in_author = data.get("author")
     in_title: str = data.get("title")
     if not in_title:
         logger.debug("Query Title, no valid title found")
@@ -156,12 +188,11 @@ async def batch_endpoint(request: Request):
 
     if not requests_list:
         return JSONResponse(
-            content={"error": "Missing or empty 'requests' field"},
-            status_code=422
+            content={"error": "Missing or empty 'requests' field"}, status_code=422
         )
 
     # 并发处理所有请求，保持输入顺序
-    tasks = [_process_batch_request(req) for req in requests_list]
+    tasks = [process_batch_request(req) for req in requests_list]
     gathered = await asyncio.gather(*tasks, return_exceptions=True)
 
     results = []
@@ -171,10 +202,9 @@ async def batch_endpoint(request: Request):
             logger.error(
                 f"Batch request error for '{requests_list[i].get('type', '')}': {result}"
             )
-            results.append({
-                "type": requests_list[i].get("type", ""),
-                "error": str(result)
-            })
+            results.append(
+                {"type": requests_list[i].get("type", ""), "error": str(result)}
+            )
         else:
             results.append(result)
 
@@ -201,7 +231,7 @@ async def match_author_endpoint(request: Request):
 async def extract_author_endpoint(request: Request):
     data: dict = await request.json()
     title = data.get("title")
-    author = FindArtistV2(title)
+    author = await extract_artist(title)
     match_status = MATCH_NO if author == "" else MATCH_EXACTLY
     logger.debug(f"Find artist for {title} : {author}")
     return JSONResponse(content={"author": author, "match": match_status})
@@ -212,41 +242,46 @@ async def refresh_cache_endpoint():
     """手动刷新缓存"""
     try:
         await cache_store.load_or_create(create_cache=True)
-        return JSONResponse(content={"success": True, "message": "Cache refreshed successfully"})
+        return JSONResponse(
+            content={"success": True, "message": "Cache refreshed successfully"}
+        )
     except (OSError, json.JSONDecodeError, KeyError, ValueError) as e:
         logger.error(f"Failed to refresh cache: {e}")
-        return JSONResponse(content={"success": False, "message": f"Cache refresh failed: {e}"}, status_code=500)
+        return JSONResponse(
+            content={"success": False, "message": f"Cache refresh failed: {e}"},
+            status_code=500,
+        )
 
 
 @app.get("/api/titles")
 @DCache(timeout=300)
 async def get_titles_list():
     """获取所有清理后的标题列表"""
-    return JSONResponse(content={
-        "titles": cache_store.titles,
-        "count": len(cache_store.titles)
-    })
+    return JSONResponse(
+        content={"titles": cache_store.titles, "count": len(cache_store.titles)}
+    )
 
 
 @app.get("/api/authors")
 @DCache(timeout=300)
 async def get_authors_list():
     """获取所有作者列表"""
-    return JSONResponse(content={
-        "authors": cache_store.authors,
-        "count": len(cache_store.authors)
-    })
+    return JSONResponse(
+        content={"authors": cache_store.authors, "count": len(cache_store.authors)}
+    )
 
 
 @app.get("/api/stats")
 @DCache(timeout=300)
 async def get_stats():
     """获取缓存统计信息"""
-    return JSONResponse(content={
-        "cache_count": len(cache_store.titles),
-        "author_count": len(cache_store.authors),
-        "current_time": datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    })
+    return JSONResponse(
+        content={
+            "cache_count": len(cache_store.titles),
+            "author_count": len(cache_store.authors),
+            "current_time": now_cst().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+    )
 
 
 @app.get("/admin")
@@ -255,12 +290,12 @@ async def admin_dashboard():
     """管理仪表板页面"""
     cache_count = len(cache_store.titles)
     author_count = len(cache_store.authors)
-    current_time = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    current_time = now_cst().strftime("%Y-%m-%d %H:%M:%S")
 
     # 注意：templates 目录在项目根目录，server.py 在 pkg/ 子目录下
     template_path = Path(__file__).parent.parent / "templates/admin.html"
     try:
-        with open(template_path, "r", encoding="utf-8") as f:
+        with open(template_path, "r", encoding="utf-8") as f:  # noqa: ASYNC230
             html_content = f.read()
 
         # 替换模板变量
@@ -272,18 +307,22 @@ async def admin_dashboard():
     except FileNotFoundError:
         logger.error(f"Template file not found: {template_path}")
         # 返回一个简单的错误页面
-        return HTMLResponse(content=f"""
+        return HTMLResponse(
+            content=f"""
             <html><body>
                 <h1>Error: Template file not found</h1>
                 <p>Please create templates/admin.html</p>
                 <p>Cache stats: {cache_count} titles, {author_count} authors</p>
             </body></html>
-        """, status_code=500)
+        """,
+            status_code=500,
+        )
 
 
 # ============================================================
 # 服务器生命周期管理 — ServerManager
 # ============================================================
+
 
 class ServerManager:
     """FastAPI 服务器生命周期管理器。
@@ -298,7 +337,7 @@ class ServerManager:
         self.port = port
         self.loop = asyncio.new_event_loop()
         self.uvicorn_server: uvicorn.Server | None = None
-        self._managed_by_uvicorn = False  # 替代原来的 is_reload 模块全局变量
+        self._managed_by_uvicorn = False
 
     # ================================================================
     # 事件循环 / uvicorn
@@ -319,7 +358,7 @@ class ServerManager:
     @staticmethod
     def _create_tray_image() -> Image.Image:
         """创建一个简单的托盘图标（绿色背景 + 白字 S）。"""
-        image = Image.new('RGB', (64, 64), color=(0, 100, 0))
+        image = Image.new("RGB", (64, 64), color=(0, 100, 0))
         dc: ImageDraw.ImageDraw = ImageDraw.Draw(image)
         dc.text((32, 32), "S", fill=(255, 255, 255), font_size=48, anchor="mm")
         return image
@@ -338,6 +377,7 @@ class ServerManager:
                 icon.update_menu()
             except (asyncio.CancelledError, RuntimeError) as e:
                 logger.warning(f"Cache refresh callback error: {e}")
+
         future.add_done_callback(on_cache_refreshed)
 
     def _on_exit(self, icon, item) -> None:
@@ -354,15 +394,14 @@ class ServerManager:
         def make_menu():
             return pystray.Menu(
                 pystray.MenuItem(
-                    f"打开管理页面 (localhost:{self.port}/admin)",
-                    self._on_open_browser
+                    f"打开管理页面 (localhost:{self.port}/admin)", self._on_open_browser
                 ),
                 pystray.MenuItem(
                     lambda text: f"立即刷新缓存 ({len(cache_store.titles)})",
-                    self._on_refresh_cache
+                    self._on_refresh_cache,
                 ),
                 pystray.Menu.SEPARATOR,
-                pystray.MenuItem("退出程序", self._on_exit)
+                pystray.MenuItem("退出程序", self._on_exit),
             )
 
         icon = pystray.Icon("dataserver", image, f"server ({self.port})", make_menu())
@@ -380,9 +419,9 @@ class ServerManager:
     # ================================================================
 
     def run(self) -> None:
-        """直接启动服务器（python dataserver_v2.py 路径）。
-
-        在守护线程中启动 uvicorn，主线程保持进程存活直到被中断。
+        """
+        直接启动服务器(python dataserver_v2.py 路径)
+        在守护线程中启动 uvicorn,主线程保持进程存活直到被中断
         """
         if check_singleton(self.port):
             sys.exit(0)
@@ -401,19 +440,20 @@ class ServerManager:
 # 单例检测
 # ============================================================
 
+
 def check_singleton(port: int = 8353) -> bool:
     """检查端口是否已被占用（防止重复启动）。"""
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(1)
-        result = sock.connect_ex(('127.0.0.1', port))
+        result = sock.connect_ex(("127.0.0.1", port))
         sock.close()
         if result == 0:
             print("⚠️  Server already running on port 8353")
             print("   Another instance of dataserver is already running.")
             print("   Exiting this instance.")
             return True
-    except (socket.error, TimeoutError, OSError) as e:
+    except (TimeoutError, OSError) as e:
         print(f"⚠️  Port check error: {e}")
         return False
         # 继续运行，不因检测错误而退出

@@ -1,32 +1,34 @@
 """匹配引擎 — 精确匹配、部分匹配、模糊匹配，以及 trigram 候选过滤"""
 
-import re
-import math
 import difflib
+import math
+import re
 
+from pkg.cache import cache_store
 from pkg.constants import (
-    PART_MATCH_LENGTH_THRESHOLD,
-    PART_MATCH_THRESHOLD_DEFAULT,
-    PART_MATCH_THRESHOLD_SHORT,
+    ENABLE_TRIGRAM_INDEX,
     FUZZY_MATCH_LENGTH_THRESHOLD,
     FUZZY_MATCH_THRESHOLD_DEFAULT,
     FUZZY_MATCH_THRESHOLD_SHORT,
-    ENABLE_TRIGRAM_INDEX,
+    PART_MATCH_LENGTH_THRESHOLD,
+    PART_MATCH_THRESHOLD_DEFAULT,
+    PART_MATCH_THRESHOLD_SHORT,
 )
-from pkg.cache import cache_store, _extract_ngrams
-
+from pkg.models import CacheSnapshot
 
 # ============================================================
 # 辅助函数
 # ============================================================
 
 # 数字范围分隔符归一化表：将所有变体统一映射到 '-'
-_RANGE_SEP_TRANS = str.maketrans({
-    '～': '-',
-    '〜': '-',
-    '－': '-',
-    '~': '-',
-})
+_RANGE_SEP_TRANS = str.maketrans(
+    {
+        "～": "-",
+        "〜": "-",
+        "－": "-",
+        "~": "-",
+    }
+)
 
 
 def _normalize_range_separators(s: str) -> str:
@@ -40,21 +42,21 @@ def check_author_in_title(title: str, author: str) -> bool:
 
 def extract_number_from_string(s: str) -> int | None:
     """从字符串中提取数字。
-        尝试最后一个空格分隔的含数字 token
-        尝试任意位置的数字。
+    尝试最后一个空格分隔的含数字 token
+    尝试任意位置的数字。
     """
-    m = re.search(r'#(\d+)', s)
+    m = re.search(r"#(\d+)", s)
     if m:
         return int(m.group(1))
 
-    parts = s.split(' ')
+    parts = s.split(" ")
     for p in reversed(parts):
-        m = re.search(r'\d+', p)
+        m = re.search(r"\d+", p)
         if m:
             return int(m.group())
 
     # 兜底：字符串中任意数字
-    m = re.search(r'\d+', s)
+    m = re.search(r"\d+", s)
     return int(m.group()) if m else None
 
 
@@ -65,7 +67,7 @@ def extract_number_range_from_string(s: str) -> tuple[int, int] | None:
     """
     s = _normalize_range_separators(s)
 
-    for m in re.finditer(r'(\d+)\s*-\s*(\d+)', s):
+    for m in re.finditer(r"(\d+)\s*-\s*(\d+)", s):
         start = int(m.group(1))
         end = int(m.group(2))
         if start > end:
@@ -76,8 +78,8 @@ def extract_number_range_from_string(s: str) -> tuple[int, int] | None:
             continue
 
         # 过滤：序数词（1st, 2nd, 21th 等）
-        after = s[m.end():m.end() + 3].lower()
-        if re.match(r'(st|nd|rd|th)', after):
+        after = s[m.end() : m.end() + 3].lower()
+        if re.match(r"(st|nd|rd|th)", after):
             continue
 
         return start, end
@@ -88,6 +90,7 @@ def extract_number_range_from_string(s: str) -> tuple[int, int] | None:
 # ============================================================
 # 匹配函数
 # ============================================================
+
 
 def exactly_match(cached_title: str, input_title: str) -> bool:
     if not cached_title or not input_title:
@@ -110,10 +113,7 @@ def exactly_match(cached_title: str, input_title: str) -> bool:
         return False
 
     query_without_number = ni.replace(str(query_number), "")
-    if query_without_number and query_without_number in nc:
-        return True
-
-    return False
+    return bool(query_without_number and query_without_number in nc)
 
 
 def part_match(cached_title: str, input_title: str) -> tuple[bool, str]:
@@ -126,18 +126,24 @@ def part_match(cached_title: str, input_title: str) -> tuple[bool, str]:
 
     min_len = math.ceil(len(input_title) * threshold)
 
-    match = difflib.SequenceMatcher(None, input_title, cached_title).find_longest_match()
+    match = difflib.SequenceMatcher(
+        None, input_title, cached_title
+    ).find_longest_match()
     if match.size >= min_len:
-        return True, input_title[match.a:match.a + match.size]
+        return True, input_title[match.a : match.a + match.size]
 
     return False, ""
 
 
-def fuzz_match(cached_titles: list[str], input_title: str, input_author: str) -> tuple[bool, str]:
+def fuzz_match(
+    cached_titles: list[str], input_title: str, input_author: str
+) -> tuple[bool, str]:
     threshold = FUZZY_MATCH_THRESHOLD_DEFAULT
     if len(input_title) < FUZZY_MATCH_LENGTH_THRESHOLD:
         threshold = FUZZY_MATCH_THRESHOLD_SHORT
-    matches = difflib.get_close_matches(input_title, cached_titles, n=3, cutoff=threshold)
+    matches = difflib.get_close_matches(
+        input_title, cached_titles, n=3, cutoff=threshold
+    )
     for fuzzy_match in matches:
         if not check_author_in_title(fuzzy_match, input_author):
             continue
@@ -146,79 +152,128 @@ def fuzz_match(cached_titles: list[str], input_title: str, input_author: str) ->
 
 
 # ============================================================
-# Trigram 索引候选过滤
+# n-gram 索引辅助
 # ============================================================
 
-def _exact_candidates(input_title: str) -> list[int]:
-    """返回包含 input_title 全部 trigram 的标题索引列表。
 
-    如果 input_title 是某个 cached_title 的子字符串
-    那么 input_title 的所有 trigram 必须都出现在该 cached_title 中。
-    若输入长度不足 3 个字符，则回退到全量扫描。
+"""
+#0, abcdef -> abc bcd cde def
+#1, ebcdeg -> ebc bcd cde deg
+#2, abcfg  -> abc bcf cfg
+#3, 
+then  abc -> (0, 2)
+      bcd -> (0, 1)
+      bcf -> (2)
+      cde -> (0, 1, 2)
+      def -> (0)
+      deg -> (1)
+      ebc -> (1)
 
-    Args:
-        input_title: 输入的查询标题
+if we want find cdef, the 3-gram of cdef are "cde" and "def"
 
-    Returns:
-        候选标题索引列表；若无法匹配任何 trigram 则返回空列表
+we can get (0, 1, 2) and (0)
+
+result = intersect them = (0)
+
+if string A is substring of B
+then each n-gram of A must also is a gram of B
+"""
+
+
+def _ngram_index(
+    snapshot: CacheSnapshot, input_title: str
+) -> dict[str, frozenset[int]] | None:
+    """根据标题长度选择对应的 n-gram 索引。
+
+    >=3 字 → trigram 索引
+      2 字 → bigram 索引
     """
-    if not ENABLE_TRIGRAM_INDEX or len(input_title) < 3:
-        return list(range(len(cache_store.titles)))
+    # title_len >= 2
+    title_len = len(input_title)
 
-    # 提取输入的所有 trigram
-    input_grams = _extract_ngrams(input_title)
+    if title_len >= 3:
+        return snapshot.trigram_index
+    if title_len == 2:
+        return snapshot.bigram_index
+    return None
 
-    if not input_grams:
-        return list(range(len(cache_store.titles)))
 
-    # 对所有 trigram 的索引集合取交集，最后排序以保证确定性的匹配顺序
-    it = iter(input_grams)
-    first = next(it)
-    result_set = cache_store.trigram_index.get(first)
-    if result_set is None:
-        return []  # 第一个 trigram 就不在任何标题中
-
-    result = set(result_set)  # 转换为可变 set 以便迭代交集
+def _intersect_index(
+    index: dict[str, frozenset[int]], grams: set[str]
+) -> frozenset[int]:
+    """对全部 gram 的索引集合取交集；任一 gram 不在索引中则返回空。"""
+    it = iter(grams)
+    result = index.get(next(it))
+    if result is None:
+        return frozenset()
     for gram in it:
-        s = cache_store.trigram_index.get(gram)
+        s = index.get(gram)
         if s is None:
-            return []  # 某个 trigram 不在任何标题中，不可能有匹配
-        result &= s
+            return frozenset()
+        result = result & s
         if not result:
-            return []
+            return frozenset()
+    return result
 
-    return sorted(result)  # 排序以保持与全量扫描一致的顺序
 
-
-def _fuzzy_candidates(input_title: str) -> list[int]:
-    """返回包含 input_title 任一 trigram 的标题索引列表。
-
-    对于部分匹配和模糊匹配，有效的匹配必须共享至少一个 trigram。
-    若候选数量超过缓存总量的一半，则回退到全量扫描以避免过滤开销浪费。
-    若输入长度不足 3 个字符，则回退到全量扫描。
-
-    Args:
-        input_title: 输入的查询标题
-
-    Returns:
-        候选标题索引列表
-    """
-    if not ENABLE_TRIGRAM_INDEX or len(input_title) < 3:
-        return list(range(len(cache_store.titles)))
-
-    half = len(cache_store.titles) // 2
+def _union_index(
+    index: dict[str, frozenset[int]], grams: set[str], max_size: int
+) -> frozenset[int] | None:
+    """对全部 gram 的索引集合取并集；超过 max_size 则返回 None 表示应回退全量扫描。"""
     candidates: set[int] = set()
-    for gram in _extract_ngrams(input_title):
-        s = cache_store.trigram_index.get(gram)
+    for gram in grams:
+        s = index.get(gram)
         if s:
             candidates.update(s)
-            if len(candidates) > half:
-                # 候选太多，过滤收益不大，直接全量扫描
-                return list(range(len(cache_store.titles)))
+            if len(candidates) > max_size:
+                return None
+    return frozenset(candidates) if candidates else frozenset()
 
-    if not candidates:
-        # 没有任何 trigram 匹配，但为防误判仍需全量扫描
-        # return list(range(len(cache_store.titles)))
-        return []
 
-    return sorted(candidates)  # 排序以保持与全量扫描一致的顺序
+# ============================================================
+# 候选过滤函数
+# ============================================================
+
+
+def exact_candidates(
+    input_title: str, input_grams: set[str] | None = None
+) -> list[int]:
+    """返回包含 input_title 全部 n-gram 的标题索引列表。
+
+    对 >=3 字标题使用 trigram 索引，2 字标题使用 bigram 索引，
+    对 1 字标题回退到全量扫描。
+    """
+    snapshot = cache_store.get_snapshot()
+
+    if not ENABLE_TRIGRAM_INDEX or input_grams is None:
+        return snapshot.all_indices
+
+    index = _ngram_index(snapshot, input_title)
+    if index is None:
+        return snapshot.all_indices
+
+    return sorted(_intersect_index(index, input_grams))
+
+
+def fuzzy_candidates(
+    input_title: str, input_grams: set[str] | None = None
+) -> list[int]:
+    """返回包含 input_title 任一 n-gram 的标题索引列表。
+
+    对 >=3 字标题使用 trigram 索引，2 字标题使用 bigram 索引，
+    1 字标题回退到全量扫描。
+    若候选数量超过缓存总量的一半则回退到全量扫描。
+    """
+    snapshot = cache_store.get_snapshot()
+
+    if not ENABLE_TRIGRAM_INDEX or input_grams is None:
+        return snapshot.all_indices
+
+    index = _ngram_index(snapshot, input_title)
+    if index is None:
+        return snapshot.all_indices
+    half = len(snapshot.titles) // 2
+    result = _union_index(index, input_grams, half)
+    if result is None:
+        return snapshot.all_indices
+    return sorted(result)

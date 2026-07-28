@@ -1,10 +1,9 @@
-
-import traceback
 import shutil
 import subprocess
+import traceback
 import zipfile
-from sys import argv
 from pathlib import Path
+from sys import argv
 
 from utils import Ask, ExitInSeconds
 
@@ -20,8 +19,16 @@ def extractRar(rarPath: Path, outputDir: Path) -> bool:
     outputDir.mkdir(exist_ok=True)
     try:
         subprocess.run(
-            ["C:\\Program Files\\7-Zip\\7z.exe", "x", str(rarPath), f"-o{outputDir}", "-y"],
-            capture_output=True, text=True, check=True
+            [
+                "C:\\Program Files\\7-Zip\\7z.exe",
+                "x",
+                str(rarPath),
+                f"-o{outputDir}",
+                "-y",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
         )
         return True
     except (subprocess.CalledProcessError, FileNotFoundError):
@@ -29,8 +36,16 @@ def extractRar(rarPath: Path, outputDir: Path) -> bool:
 
     try:
         subprocess.run(
-            ["C:\\Program Files\\WinRAR\\WinRAR.exe", "x", str(rarPath), str(outputDir), "-y"],
-            capture_output=True, text=True, check=True
+            [
+                "C:\\Program Files\\WinRAR\\WinRAR.exe",
+                "x",
+                str(rarPath),
+                str(outputDir),
+                "-y",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
         )
         return True
     except (subprocess.CalledProcessError, FileNotFoundError):
@@ -48,7 +63,9 @@ def convertRarToZip(rarPath: Path) -> Path | None:
 
     zipPath = rarPath.with_suffix(".zip")
 
-    with zipfile.ZipFile(zipPath, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=5) as zipObj:
+    with zipfile.ZipFile(
+        zipPath, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=5
+    ) as zipObj:
         for file in tempDir.rglob("*"):
             if file.is_file():
                 zipObj.write(file, file.relative_to(tempDir))
@@ -87,7 +104,7 @@ def main():
         if result:
             print(f"  -> {result}")
         else:
-            print(f"  Failed!")
+            print("  Failed!")
 
     print("Work Done!")
 
@@ -95,6 +112,6 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except Exception:
+    except Exception:  # noqa: BLE001
         print(traceback.format_exc())
     ExitInSeconds(10)

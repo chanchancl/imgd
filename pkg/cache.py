@@ -1,28 +1,27 @@
 """缓存管理 — CacheStore、文件系统收集、trigram 索引构建"""
 
-import os
-import json
 import asyncio
-import datetime
+import json
+import os
 import threading
 from pathlib import Path
 
-from config import SearchPathDir, JUST_LOAD
 from autoclassfiy import FindArtistV2
-
+from config import JUST_LOAD, SearchPathDir
 from pkg.constants import (
-    ENABLE_TRIGRAM_INDEX,
     CACHE_PATH,
     CACHE_REFRESH_INTERVAL_SECONDS,
+    ENABLE_TRIGRAM_INDEX,
     logger,
+    now_cst,
     searchPath,
 )
-from pkg.models import TitlesCache
-
+from pkg.models import CacheSnapshot, TitlesCache
 
 # ============================================================
 # n-gram 工具函数
 # ============================================================
+
 
 def _extract_ngrams(s: str, n: int = 3) -> set[str]:
     """提取字符串 s 中所有连续的 n 字符序列 (n-gram)。
@@ -36,35 +35,41 @@ def _extract_ngrams(s: str, n: int = 3) -> set[str]:
     """
     if len(s) < n:
         return set()
-    return {s[i:i + n] for i in range(len(s) - n + 1)}
+    return {s[i : i + n] for i in range(len(s) - n + 1)}
 
 
 # ============================================================
-# Trigram 索引构建
+# n-gram 索引构建
 # ============================================================
 
-def _build_trigram_index(titles: list[str]) -> dict[str, frozenset[int]]:
+
+def _build_ngram_index(titles: list[str], n: int = 3) -> dict[str, frozenset[int]]:
+    """构建 n-gram 索引：将每个 n-gram 映射到包含它的标题索引集合。
+
+    Args:
+        titles: 标题列表
+        n: n-gram 长度，默认 3 (trigram)
+
+    Returns:
+        gram -> frozenset of title indices
     """
-        构建 trigram 索引：将每个 trigram 映射到包含它的标题索引集合。
-        gram -> idx of title include gram
-    """
-    trigram_to_indices: dict[str, set[int]] = {}
+    gram_to_indices: dict[str, set[int]] = {}
 
     for idx, title in enumerate(titles):
-        title_grams = _extract_ngrams(title)
+        title_grams = _extract_ngrams(title, n=n)
         for gram in title_grams:
-            if gram not in trigram_to_indices:
-                trigram_to_indices[gram] = set()
-            trigram_to_indices[gram].add(idx)
+            if gram not in gram_to_indices:
+                gram_to_indices[gram] = set()
+            gram_to_indices[gram].add(idx)
 
     # 冻结为不可变结构，允许无锁安全读取
-    trigram_index = {g: frozenset(indices) for g, indices in trigram_to_indices.items()}
-    return trigram_index
+    return {g: frozenset(indices) for g, indices in gram_to_indices.items()}
 
 
 # ============================================================
 # 文件系统收集
 # ============================================================
+
 
 def _collect_cleaned_titles_from_filesystem() -> list[str]:
     """从文件系统收集所有清理后的标题"""
@@ -78,13 +83,13 @@ def _collect_cleaned_titles_from_filesystem() -> list[str]:
         names_set.update(dirs)
 
         for filename in files:
-            if filename.endswith(('.zip', '.rar')):
+            if filename.endswith((".zip", ".rar")):
                 names_set.add(os.path.splitext(filename)[0])
 
     # 从搜索路径收集
     for search_dir in searchPath:
         for entry in os.scandir(search_dir):
-            if entry.is_file() and entry.name.endswith('.zip'):
+            if entry.is_file() and entry.name.endswith(".zip"):
                 names_set.add(os.path.splitext(entry.name)[0])
 
     # 排序并返回列表（逆序）
@@ -95,17 +100,34 @@ def _collect_cleaned_titles_from_filesystem() -> list[str]:
 # CacheStore
 # ============================================================
 
+
 class CacheStore:
     """
-        线程安全的缓存状态管理器。
+    线程安全的缓存状态管理器。
     """
 
     def __init__(self):
         self.lock = threading.Lock()
         self.titles: list[str] = []
         self.authors: list[str] = []
+        self.author_set: set[str] = set()
         self.trigram_index: dict[str, frozenset[int]] = {}
-        self.last_update_time = datetime.datetime.now()
+        self.bigram_index: dict[str, frozenset[int]] = {}
+        self.last_update_time = now_cst()
+        self._snapshot = CacheSnapshot(
+            titles=self.titles,
+            trigram_index=self.trigram_index,
+            bigram_index=self.bigram_index,
+            authors=self.authors,
+            author_set=self.author_set,
+        )
+
+    def get_snapshot(self) -> CacheSnapshot:
+        """获取当前缓存的一致性快照，无需加锁。
+
+        返回 CacheSnapshot 结构体，通过命名属性访问各字段。
+        """
+        return self._snapshot
 
     # ================================================================
     # 内部更新
@@ -122,9 +144,11 @@ class CacheStore:
         new_titles = sorted(set(new_titles), reverse=True)
 
         if ENABLE_TRIGRAM_INDEX:
-            new_trigram_index = _build_trigram_index(new_titles)
+            new_trigram_index = _build_ngram_index(new_titles, n=3)
+            new_bigram_index = _build_ngram_index(new_titles, n=2)
         else:
             new_trigram_index = {}
+            new_bigram_index = {}
 
         new_authors: list[str] = []
         for title in new_titles:
@@ -135,7 +159,17 @@ class CacheStore:
         with self.lock:
             self.titles = new_titles
             self.trigram_index = new_trigram_index
+            self.bigram_index = new_bigram_index
             self.authors = new_authors
+            self.author_set = set(new_authors)
+            # 原子替换快照，保证读取侧无需锁即可获取一致性视图
+            self._snapshot = CacheSnapshot(
+                titles=self.titles,
+                trigram_index=self.trigram_index,
+                bigram_index=self.bigram_index,
+                authors=self.authors,
+                author_set=self.author_set,
+            )
 
     # ================================================================
     # 加载 / 刷新
@@ -191,7 +225,7 @@ class CacheStore:
         self._update(cleaned_titles)
 
         # 持久化到 JSON
-        cache = TitlesCache(createTime=datetime.datetime.now(), titles=self.titles)
+        cache = TitlesCache(createTime=now_cst(), titles=self.titles)
         cache.save(cache_file_path)
 
         logger.debug(

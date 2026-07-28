@@ -1,8 +1,10 @@
+import sys
 import traceback
+from pathlib import Path
 from shutil import copy
 from sys import argv
-from pathlib import Path
 from tempfile import TemporaryDirectory
+
 from send2trash import send2trash
 
 from zip import extract, package
@@ -35,7 +37,7 @@ def combineFolders(inputPaths: list[Path], outputPath: Path):
             copy(folder, tempDirPath)
         for zipFile in tempDirPath.iterdir():
             realPath = zipFile
-            if zipFile.suffix == '.zip':
+            if zipFile.suffix == ".zip":
                 realPath = extract(zipFile)
             print(f"Iterate : {realPath}")
             currentIndex = combineFolder(realPath, outputPath, currentIndex)
@@ -46,7 +48,7 @@ def combineFolders(inputPaths: list[Path], outputPath: Path):
 def main():
     if len(argv) <= 1:
         print("Please take parameters as input")
-        exit(0)
+        sys.exit(0)
 
     inputPaths = [Path(arg) for arg in argv[1:]]
     inputPaths.sort()
@@ -76,7 +78,7 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except Exception:
+    except Exception:  # noqa: BLE001
         print(traceback.format_exc())
         input()
     input()

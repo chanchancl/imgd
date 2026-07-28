@@ -1,8 +1,16 @@
-
 import sys
 import time
+from logging import (
+    DEBUG,
+    INFO,
+    FileHandler,
+    Formatter,
+    Logger,
+    StreamHandler,
+    getLogger,
+)
 from pathlib import Path
-from logging import Logger, getLogger, StreamHandler, FileHandler, Formatter, INFO, DEBUG
+
 
 def BuildHeaderFromStr(s: dict):
     headers = {}
@@ -21,16 +29,17 @@ def Ask(prompt=""):
     if prompt != "":
         print(prompt)
     ans = input().strip()
-    if ans == "" or ans not in ".yY":
+    # ans 为空 或者 ans 不在 .yY 中
+    if ans == "":
         return False
-    return True
+    return ans in ".yY"
 
 
 def ExitInSeconds(seconds=10):
     try:
         import keyboard
     except ImportError:
-        print("Warning: 'keyboard' library not installed. Run: pip install keyboard")
+        print("Warning: 'keyboard' library not installed. Run: uv add keyboard")
         for i in range(seconds):
             print(f"Will exit after {seconds - i} seconds")
             time.sleep(1)
@@ -42,7 +51,7 @@ def ExitInSeconds(seconds=10):
         nonlocal esc_pressed
         esc_pressed = True
 
-    keyboard.on_press_key('esc', on_esc)
+    keyboard.on_press_key("esc", on_esc)
 
     try:
         for i in range(seconds):
@@ -52,21 +61,20 @@ def ExitInSeconds(seconds=10):
                 print("ESC pressed, exiting...")
                 break
     finally:
-        keyboard.remove_hotkey('esc')
+        keyboard.remove_hotkey("esc")
 
 
 def NewFileLogger(filePath: str, debug: bool = False, file_debug=False) -> Logger:
-    logFilePath = Path("log") / Path(filePath).with_suffix('.log').name
+    logFilePath = Path("log") / Path(filePath).with_suffix(".log").name
 
     logger = getLogger(filePath)
     logger.setLevel(DEBUG)
 
     fileFormatter = Formatter(
-        '%(asctime)s | %(levelname)-8s | %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
+        "%(asctime)s | %(levelname)-8s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
     )
 
-    fileHandler = FileHandler(logFilePath, mode='a', encoding='utf-8')
+    fileHandler = FileHandler(logFilePath, mode="a", encoding="utf-8")
     fileHandler.setLevel(DEBUG if file_debug else INFO)
     fileHandler.setFormatter(fileFormatter)
 
@@ -74,9 +82,9 @@ def NewFileLogger(filePath: str, debug: bool = False, file_debug=False) -> Logge
     class RawMessageFormatter(Formatter):
         def format(self, record):
             return record.getMessage()
+
     consoleFormatter = Formatter(
-        '%(asctime)s | %(levelname)-8s | %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
+        "%(asctime)s | %(levelname)-8s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
     )
     consoleHandler = StreamHandler(sys.stdout)
     consoleHandler.setLevel(DEBUG if debug else INFO)
@@ -88,6 +96,7 @@ def NewFileLogger(filePath: str, debug: bool = False, file_debug=False) -> Logge
 
     return logger
 
+
 def TestLogger():
     logger = NewFileLogger(__file__, True)
     logger.debug("This is a debug message")
@@ -95,6 +104,7 @@ def TestLogger():
     logger.warning("This is a warning message")
     logger.error("This is an error message")
     logger.critical("This is a critical message")
+
 
 if __name__ == "__main__":
     TestLogger()

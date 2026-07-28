@@ -1,21 +1,19 @@
-
 import traceback
-import send2trash
-
-from sys import argv
 from pathlib import Path
-from PIL import Image
+from sys import argv
 from zipfile import ZipFile
+
 import pillow_avif  # noqa: F401 # make pillow support avif format
+import send2trash
+from PIL import Image
 
-from zip import extract, package
 from utils import ExitInSeconds
-
+from zip import extract, package
 
 WantReplace = ".avif"
-Target = '.jpg'
-if Target == '.jpg':
-    FORMAT = 'JPEG'
+Target = ".jpg"
+if Target == ".jpg":
+    FORMAT = "JPEG"
 
 
 def translateFormat(path: Path) -> Path:
@@ -33,7 +31,7 @@ def translateFormat(path: Path) -> Path:
 
         newPath = newBase.joinpath(Path(x.parts[-1]).with_suffix(Target))
         print(x)
-        print(f'\t{newPath}')
+        print(f"\t{newPath}")
         if not newPath.parent.exists():
             newPath.parent.mkdir(parents=True)
         with Image.open(x) as image:
@@ -45,11 +43,12 @@ def translateFormat(path: Path) -> Path:
 
 
 def has_avif_in_zip(zip_path: Path) -> bool:
-    with ZipFile(zip_path, 'r') as zip_file:
+    with ZipFile(zip_path, "r") as zip_file:
         for file_name in zip_file.namelist():
             if file_name.endswith(WantReplace):
                 return True
     return False
+
 
 def main():
     if len(argv) <= 1:
@@ -93,6 +92,6 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except Exception:
+    except Exception:  # noqa: BLE001
         print(traceback.format_exc())
     ExitInSeconds(10)
