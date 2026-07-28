@@ -1,8 +1,8 @@
 """dataserver 入口
 
 使用方式：
-    - 直接运行:   uv run python dataserver.py
-    - uvicorn:   uv run uvicorn dataserver:app --reload --host 127.0.0.1 --port 8353
+    - 直接运行:   python dataserver.py
+    - uvicorn:   uvicorn dataserver:app --reload --host 127.0.0.1 --port 8353
 """
 
 import os
