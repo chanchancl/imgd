@@ -585,7 +585,8 @@ async def lifespan(app: FastAPI):
     # running
     # handle request
     yield
-    # exit
+
+    logger.info("Shutdown")
 
 
 app = FastAPI(lifespan=lifespan)
