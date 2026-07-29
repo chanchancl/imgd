@@ -41,10 +41,7 @@ def check_author_in_title(title: str, author: str) -> bool:
 
 
 def extract_number_from_string(s: str) -> int | None:
-    """从字符串中提取数字。
-    尝试最后一个空格分隔的含数字 token
-    尝试任意位置的数字。
-    """
+    """从字符串中提取数字，优先 #数字 格式，其次末位含数字 token"""
     m = re.search(r"#(\d+)", s)
     if m:
         return int(m.group(1))
@@ -61,10 +58,7 @@ def extract_number_from_string(s: str) -> int | None:
 
 
 def extract_number_range_from_string(s: str) -> tuple[int, int] | None:
-    """从字符串中提取数字范围（如 1-3, 01~05, 1～3）。
-
-    先归一化所有分隔符变体为 '-'，再匹配。过滤日期和序数词。
-    """
+    """提取数字范围（如 1-3, 01~05），过滤日期和序数词"""
     s = _normalize_range_separators(s)
 
     for m in re.finditer(r"(\d+)\s*-\s*(\d+)", s):
@@ -93,16 +87,19 @@ def extract_number_range_from_string(s: str) -> tuple[int, int] | None:
 
 
 def exactly_match(cached_title: str, input_title: str) -> bool:
+    """精确匹配：子串包含 或 数字范围匹配"""
     if not cached_title or not input_title:
         return False
 
-    # 归一化：统一分隔符，让 1-3 / 1~3 / 1～3 等价
+    # 归一化分隔符，统一 1-3 / 1~3 / 1～3
     nc = _normalize_range_separators(cached_title)
     ni = _normalize_range_separators(input_title)
 
+    # 直接子串匹配
     if ni in nc:
         return True
 
+    # 数字范围匹配：输入"3" 命中了缓存中的 "1-3" → 提取范围并检查数字是否在范围内
     range_match = extract_number_range_from_string(nc)
     if not range_match:
         return False
@@ -112,6 +109,7 @@ def exactly_match(cached_title: str, input_title: str) -> bool:
     if query_number is None or query_number < range_start or query_number > range_end:
         return False
 
+    # 确认去掉数字后的剩余部分仍是子串（避免"vol.3" 去数字后 "vol." 不匹配）
     query_without_number = ni.replace(str(query_number), "")
     return bool(query_without_number and query_without_number in nc)
 
@@ -156,38 +154,15 @@ def fuzz_match(
 # ============================================================
 
 
-"""
-#0, abcdef -> abc bcd cde def
-#1, ebcdeg -> ebc bcd cde deg
-#2, abcfg  -> abc bcf cfg
-#3, 
-then  abc -> (0, 2)
-      bcd -> (0, 1)
-      bcf -> (2)
-      cde -> (0, 1, 2)
-      def -> (0)
-      deg -> (1)
-      ebc -> (1)
-
-if we want find cdef, the 3-gram of cdef are "cde" and "def"
-
-we can get (0, 1, 2) and (0)
-
-result = intersect them = (0)
-
-if string A is substring of B
-then each n-gram of A must also is a gram of B
-"""
+# n-gram 索引原理：
+# 若字符串 A 是 B 的子串，则 A 的每个 n-gram 必然也是 B 的 n-gram
+# → 对查询词的 grams 在索引中取交集即可得到精确候选
 
 
 def _ngram_index(
     snapshot: CacheSnapshot, input_title: str
 ) -> dict[str, frozenset[int]] | None:
-    """根据标题长度选择对应的 n-gram 索引。
-
-    >=3 字 → trigram 索引
-      2 字 → bigram 索引
-    """
+    """根据标题长度选 trigram(>=3字) 或 bigram(2字) 索引"""
     # title_len >= 2
     title_len = len(input_title)
 
@@ -201,7 +176,9 @@ def _ngram_index(
 def _intersect_index(
     index: dict[str, frozenset[int]], grams: set[str]
 ) -> frozenset[int]:
-    """对全部 gram 的索引集合取交集；任一 gram 不在索引中则返回空。"""
+    """对全部 gram 的索引集合取交集，任一 gram 缺失则返回空"""
+    if not grams:
+        return frozenset()
     it = iter(grams)
     result = index.get(next(it))
     if result is None:
@@ -219,7 +196,7 @@ def _intersect_index(
 def _union_index(
     index: dict[str, frozenset[int]], grams: set[str], max_size: int
 ) -> frozenset[int] | None:
-    """对全部 gram 的索引集合取并集；超过 max_size 则返回 None 表示应回退全量扫描。"""
+    """对全部 gram 的索引集合取并集，超 max_size 返回 None"""
     candidates: set[int] = set()
     for gram in grams:
         s = index.get(gram)
@@ -238,11 +215,7 @@ def _union_index(
 def exact_candidates(
     input_title: str, input_grams: set[str] | None = None
 ) -> list[int]:
-    """返回包含 input_title 全部 n-gram 的标题索引列表。
-
-    对 >=3 字标题使用 trigram 索引，2 字标题使用 bigram 索引，
-    对 1 字标题回退到全量扫描。
-    """
+    """精确候选：包含全部 n-gram 的标题索引，回退全量扫描"""
     snapshot = cache_store.get_snapshot()
 
     if not ENABLE_TRIGRAM_INDEX or input_grams is None:
@@ -258,12 +231,7 @@ def exact_candidates(
 def fuzzy_candidates(
     input_title: str, input_grams: set[str] | None = None
 ) -> list[int]:
-    """返回包含 input_title 任一 n-gram 的标题索引列表。
-
-    对 >=3 字标题使用 trigram 索引，2 字标题使用 bigram 索引，
-    1 字标题回退到全量扫描。
-    若候选数量超过缓存总量的一半则回退到全量扫描。
-    """
+    """模糊候选：包含任一 n-gram 的标题索引，超半数回退全量扫描"""
     snapshot = cache_store.get_snapshot()
 
     if not ENABLE_TRIGRAM_INDEX or input_grams is None:
@@ -272,6 +240,7 @@ def fuzzy_candidates(
     index = _ngram_index(snapshot, input_title)
     if index is None:
         return snapshot.all_indices
+    # 候选超过总数一半时不如直接全量扫描
     half = len(snapshot.titles) // 2
     result = _union_index(index, input_grams, half)
     if result is None:

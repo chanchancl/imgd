@@ -21,33 +21,34 @@ def now_cst() -> datetime.datetime:
 
 
 # --- 搜索路径 ---
-from config import DownloadPath
+from config import ExtraSearchDir
 
-searchPath = [DownloadPath]
+extra_search_dirs = [ExtraSearchDir]
 
 # --- 匹配阈值 ---
-PART_MATCH_LENGTH_THRESHOLD = 10
-PART_MATCH_THRESHOLD_DEFAULT = 0.65
+# 短标题（< 阈值_字符数）使用更严格的阈值，减少误匹配
+
+PART_MATCH_LENGTH_THRESHOLD = 10  # 低于此长度的标题用 SHORT 阈值
+PART_MATCH_THRESHOLD_DEFAULT = 0.65  # 公共子串长度 / 输入长度
 PART_MATCH_THRESHOLD_SHORT = 0.85
 
 FUZZY_MATCH_LENGTH_THRESHOLD = 15
-FUZZY_MATCH_THRESHOLD_DEFAULT = 0.6
+FUZZY_MATCH_THRESHOLD_DEFAULT = 0.6  # difflib cutoff
 FUZZY_MATCH_THRESHOLD_SHORT = 0.8
 
 # --- 缓存设置 ---
-CACHE_MIN_REFRESH_INTERVAL_HOURS = 1
+CACHE_MIN_REFRESH_INTERVAL_HOURS = 1  # 被动刷新：距上次查询超过 N 小时则触发
 CACHE_PATH = "cache/TitlesCache.json"
-CACHE_REFRESH_INTERVAL_SECONDS = 3600 * 12  # 12 hours
+CACHE_REFRESH_INTERVAL_SECONDS = 3600 * 12  # 后台主动刷新周期
 
-# --- 功能开关 ---
-DEBUG = False
-ENABLE_DCACHE = True
-ENABLE_RECORD_BATCH_REQUEST = True
-
-ENABLE_TRIGRAM_INDEX = True
-
-if DEBUG or ENABLE_RECORD_BATCH_REQUEST:
-    ENABLE_DCACHE = False
+# --- 功能开关（从 config.py 导入，在此重新导出供其他模块使用）---
+from config import (  # noqa: F401
+    DEBUG,
+    ENABLE_DCACHE,
+    ENABLE_RECORD_BATCH_REQUEST,
+    ENABLE_TRIGRAM_INDEX,
+    JUST_LOAD,
+)
 
 # --- MatchStatus 枚举 ---
 MATCH_NO = 0

@@ -332,6 +332,42 @@
             padding: 30px;
             font-style: italic;
         }
+
+        /* Request stats table */
+        .stats-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9rem;
+        }
+
+        .stats-table th,
+        .stats-table td {
+            padding: 8px 12px;
+            text-align: right;
+            border-bottom: 1px solid #eee;
+        }
+
+        .stats-table th {
+            background: #f8f9fa;
+            color: #555;
+            font-weight: 600;
+            position: sticky;
+            top: 0;
+        }
+
+        .stats-table td:first-child,
+        .stats-table th:first-child {
+            text-align: left;
+        }
+
+        .stats-table tr:hover {
+            background: #f0f7ff;
+        }
+
+        .stat-row-overall {
+            font-weight: 700;
+            background: #eef5ff;
+        }
     </style>
 </head>
 
@@ -354,6 +390,12 @@
                 <div class="stat-value" id="authors-count">{author_count}</div>
                 <div class="stat-label">Unique authors extracted</div>
                 <div class="card-footer">Click to view all authors</div>
+            </div>
+            <div class="stat-card" id="requests-card" onclick="showRequestStatsModal()">
+                <h2><span class="icon">⚡</span> Requests</h2>
+                <div class="stat-value" id="requests-count">0</div>
+                <div class="stat-label">Total requests processed</div>
+                <div class="card-footer" id="requests-uptime">Uptime: --</div>
             </div>
         </div>
 
@@ -387,6 +429,24 @@
                 <div id="titles-list-container" class="list-container">
                     <div class="loading">
                         <div class="spinner"></div> Loading titles...
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Request Stats Modal -->
+    <div class="modal" id="requests-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>⚡ Request Latency Statistics</h3>
+                <span id="requests-uptime-display" style="color:#7f8c8d;font-size:0.9rem;flex:1;margin-left:15px;"></span>
+                <button class="modal-close" onclick="closeModal('requests-modal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div id="requests-stats-container" class="list-container">
+                    <div class="loading">
+                        <div class="spinner"></div> Loading stats...
                     </div>
                 </div>
             </div>
@@ -465,17 +525,26 @@
                 document.getElementById('last-updated-time').textContent = data.current_time;
                 document.getElementById('server-time').textContent = data.current_time;
 
+                // Update request stats if available
+                if (data.request_stats) {
+                    document.getElementById('requests-count').textContent = data.request_stats.total_requests;
+                    document.getElementById('requests-uptime').textContent =
+                        `Uptime: ${formatUptime(data.request_stats.uptime_seconds)}`;
+                }
+
                 // Update modal counts if modals are open
                 const titlesModal = document.getElementById('titles-modal');
                 const authorsModal = document.getElementById('authors-modal');
+                const requestsModal = document.getElementById('requests-modal');
 
                 if (titlesModal.style.display === 'flex') {
-                    // Titles modal is open, refresh titles list
                     fetchTitlesList();
                 }
                 if (authorsModal.style.display === 'flex') {
-                    // Authors modal is open, refresh authors list
                     fetchAuthorsList();
+                }
+                if (requestsModal.style.display === 'flex') {
+                    showRequestStatsModal();
                 }
             } catch (error) {
                 console.error('Error fetching stats:', error);
@@ -634,12 +703,16 @@
         window.onclick = function (event) {
             const titlesModal = document.getElementById('titles-modal');
             const authorsModal = document.getElementById('authors-modal');
+            const requestsModal = document.getElementById('requests-modal');
 
             if (event.target === titlesModal) {
                 closeModal('titles-modal');
             }
             if (event.target === authorsModal) {
                 closeModal('authors-modal');
+            }
+            if (event.target === requestsModal) {
+                closeModal('requests-modal');
             }
         }
 
@@ -682,6 +755,76 @@
                 setTimeout(() => {
                     btnText.textContent = '🔄 Refresh Server Cache';
                 }, 3000);
+            }
+        }
+
+        // Format uptime from seconds
+        function formatUptime(seconds) {
+            const d = Math.floor(seconds / 86400);
+            const h = Math.floor((seconds % 86400) / 3600);
+            const m = Math.floor((seconds % 3600) / 60);
+            const s = Math.floor(seconds % 60);
+            const parts = [];
+            if (d > 0) parts.push(`${d}d`);
+            if (h > 0) parts.push(`${h}h`);
+            if (m > 0) parts.push(`${m}m`);
+            parts.push(`${s}s`);
+            return parts.join(' ');
+        }
+
+        // Show request latency statistics modal
+        async function showRequestStatsModal() {
+            const modal = document.getElementById('requests-modal');
+            modal.style.display = 'flex';
+            const container = document.getElementById('requests-stats-container');
+            container.innerHTML = '<div class="loading"><div class="spinner"></div> Loading stats...</div>';
+
+            try {
+                const response = await fetch('/api/stats');
+                const data = await response.json();
+                const rs = data.request_stats;
+
+                if (!rs) {
+                    container.innerHTML = '<div class="empty-list">No request data available yet</div>';
+                    return;
+                }
+
+                document.getElementById('requests-uptime-display').textContent =
+                    `Uptime: ${formatUptime(rs.uptime_seconds)} | Total: ${rs.total_requests} requests`;
+
+                let html = '<table class="stats-table"><thead><tr>' +
+                    '<th>Endpoint</th><th>Count</th><th>Min</th><th>Avg</th><th>Max</th>' +
+                    '<th>P50</th><th>P90</th><th>P99</th></tr></thead><tbody>';
+
+                // Overall row
+                const o = rs.overall;
+                if (o.count > 0) {
+                    html += `<tr class="stat-row-overall"><td>📊 TOTAL (all endpoints)</td>
+                        <td>${o.count}</td><td>${o.min}ms</td><td>${o.avg}ms</td>
+                        <td>${o.max}ms</td><td>${o.p50}ms</td><td>${o.p90}ms</td>
+                        <td>${o.p99}ms</td></tr>`;
+                }
+
+                // Per-endpoint rows
+                const endpoints = rs.per_endpoint || {};
+                for (const [endpoint, s] of Object.entries(endpoints)) {
+                    html += `<tr><td>${escapeHtml(endpoint)}</td>
+                        <td>${s.count}</td><td>${s.min}ms</td><td>${s.avg}ms</td>
+                        <td>${s.max}ms</td><td>${s.p50}ms</td><td>${s.p90}ms</td>
+                        <td>${s.p99}ms</td></tr>`;
+                }
+
+                html += '</tbody></table>';
+
+                if (o.count === 0 && Object.keys(endpoints).length === 0) {
+                    html = '<div class="empty-list">No requests processed yet</div>';
+                }
+
+                container.innerHTML = html;
+
+            } catch (error) {
+                console.error('Error fetching request stats:', error);
+                container.innerHTML = '<div class="empty-list" style="color:#e74c3c">Error loading stats</div>';
             }
         }
 

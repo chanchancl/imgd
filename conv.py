@@ -1,6 +1,6 @@
+import sys
 import traceback
 from pathlib import Path
-from sys import argv
 from zipfile import ZipFile
 
 import pillow_avif  # noqa: F401 # make pillow support avif format
@@ -51,11 +51,11 @@ def has_avif_in_zip(zip_path: Path) -> bool:
 
 
 def main():
-    if len(argv) <= 1:
+    if len(sys.argv) <= 1:
         print("Please take parameters as input")
-        exit(0)
+        sys.exit(0)
 
-    inputPaths = [Path(x) for x in argv[1:]]
+    inputPaths = [Path(x) for x in sys.argv[1:]]
     inputPaths.sort()
 
     for path in inputPaths:

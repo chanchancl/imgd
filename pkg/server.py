@@ -1,4 +1,4 @@
-"""服务器 — FastAPI app、路由、中间件、ServerManager、check_singleton"""
+"""服务器 — FastAPI app、路由、中间件、ServerManager"""
 
 import asyncio
 import datetime
@@ -18,7 +18,7 @@ import pystray
 import uvicorn
 from cache_middleware import CacheMiddleware, MemoryBackend
 from cache_middleware import cache as DCache
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from PIL import Image, ImageDraw
@@ -40,6 +40,10 @@ from pkg.query import (
     query_author,
     query_match_title,
 )
+from pkg.stats import RequestStatsCollector
+
+# --- 模块级单例 ---
+request_stats = RequestStatsCollector()
 
 # ============================================================
 # FastAPI 应用与生命周期
@@ -82,7 +86,7 @@ app.add_middleware(
 # 中间件
 # ============================================================
 
-# 防止多个请求同时触发缓存刷新
+# 防止并发触发缓存刷新
 _refresh_lock = asyncio.Lock()
 
 
@@ -93,34 +97,40 @@ async def updateCacheMiddleware(req: Request, call_next):
     refresh_interval = datetime.timedelta(hours=CACHE_MIN_REFRESH_INTERVAL_HOURS)
     if elapsed_time > refresh_interval:
         async with _refresh_lock:
-            # 双重检查：获取锁后再次确认是否需要刷新
+            # 双重检查：获取锁后再次确认
             if (now_cst() - cache_store.last_update_time) > refresh_interval:
                 cache_store.last_update_time = now_cst()
                 logger.debug(
                     f"Refresh cache due to {CACHE_MIN_REFRESH_INTERVAL_HOURS} hour passed since last query"
                 )
                 await cache_store.load_or_create(create_cache=True)
+                # 清除 DCache，因为缓存数据已刷新
                 await memory_backend.close()
 
     return await call_next(req)
 
 
-# 统计 request 用时
+# 请求计时 + 统计
 @app.middleware("http")
 async def timeCostMiddleware(req: Request, call_next):
     body = await req.json() if req.method in ("POST", "PUT", "PATCH") else None
-    start = now_cst()
-    rsp: Response = await call_next(req)
-    eplased = now_cst() - start
-    logger.debug(f"Query use {eplased.microseconds / 1000}ms")
+    start = time.perf_counter()
+    rsp = await call_next(req)
+    elapsed = time.perf_counter() - start
+    elapsed_ms = elapsed * 1000
+    logger.debug(f"Query use {elapsed_ms:.2f}ms")
+
+    # 只统计 /query 开头的业务 API
+    if req.url.path.startswith("/query"):
+        request_stats.record(req.method, req.url.path, elapsed_ms)
 
     if (
         ENABLE_RECORD_BATCH_REQUEST
         and req.url.path.startswith("/query/batch")
         and body is not None
-        and eplased.microseconds / 1000 >= 150
+        and elapsed_ms >= 150
     ):
-        record = {"req_body": json.dumps(body), "timeused": eplased.microseconds / 1000}
+        record = {"req_body": json.dumps(body), "timeused": elapsed_ms}
         with open("tmp/batch_record.json", "+a", encoding="utf-8") as fp:  # noqa: ASYNC230
             json.dump(record, fp)
             fp.write("\n")
@@ -179,7 +189,7 @@ async def match_title_endpoint(request: Request):
     return make_response(match_status, "")
 
 
-# 单次http请求处理大量的request
+# 单次 HTTP 请求处理批量 query
 @app.post("/query/batch")
 @DCache(timeout=300)
 async def batch_endpoint(request: Request):
@@ -191,7 +201,7 @@ async def batch_endpoint(request: Request):
             content={"error": "Missing or empty 'requests' field"}, status_code=422
         )
 
-    # 并发处理所有请求，保持输入顺序
+    # 并发处理，return_exceptions=True 保证单个失败不影响其他任务
     tasks = [process_batch_request(req) for req in requests_list]
     gathered = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -272,14 +282,15 @@ async def get_authors_list():
 
 
 @app.get("/api/stats")
-@DCache(timeout=300)
 async def get_stats():
-    """获取缓存统计信息"""
+    """获取缓存统计信息与请求统计"""
+    stats_data = request_stats.get_stats()
     return JSONResponse(
         content={
             "cache_count": len(cache_store.titles),
             "author_count": len(cache_store.authors),
             "current_time": now_cst().strftime("%Y-%m-%d %H:%M:%S"),
+            "request_stats": stats_data,
         }
     )
 
@@ -325,11 +336,7 @@ async def admin_dashboard():
 
 
 class ServerManager:
-    """FastAPI 服务器生命周期管理器。
-
-    统一管理事件循环、服务器启动和系统托盘。
-    使启动/停止逻辑内聚。
-    """
+    """管理 FastAPI 服务器生命周期和系统托盘。"""
 
     def __init__(self, app: FastAPI, host: str = "127.0.0.1", port: int = 8353):
         self.app = app
@@ -344,7 +351,7 @@ class ServerManager:
     # ================================================================
 
     def _serve(self) -> None:
-        """在事件循环中运行 uvicorn 服务器（阻塞调用线程）。"""
+        """在事件循环中运行 uvicorn（阻塞调用线程）"""
         config = uvicorn.Config(
             self.app, host=self.host, port=self.port, log_level="info"
         )
@@ -357,7 +364,7 @@ class ServerManager:
 
     @staticmethod
     def _create_tray_image() -> Image.Image:
-        """创建一个简单的托盘图标（绿色背景 + 白字 S）。"""
+        """创建托盘图标（绿色背景 + 白字 S）"""
         image = Image.new("RGB", (64, 64), color=(0, 100, 0))
         dc: ImageDraw.ImageDraw = ImageDraw.Draw(image)
         dc.text((32, 32), "S", fill=(255, 255, 255), font_size=48, anchor="mm")
@@ -367,6 +374,7 @@ class ServerManager:
         webbrowser.open(f"http://{self.host}:{self.port}/admin")
 
     def _on_refresh_cache(self, icon, item) -> None:
+        # 从托盘线程跨线程调度到事件循环执行
         future = asyncio.run_coroutine_threadsafe(
             cache_store.load_or_create(create_cache=True), self.loop
         )
@@ -382,6 +390,7 @@ class ServerManager:
 
     def _on_exit(self, icon, item) -> None:
         icon.stop()
+        # uvicorn --reload 模式下需要 kill 父进程才能真正退出
         if self._managed_by_uvicorn:
             parent_pid = os.getppid()
             os.kill(parent_pid, signal.SIGTERM)
@@ -401,6 +410,15 @@ class ServerManager:
                     self._on_refresh_cache,
                 ),
                 pystray.Menu.SEPARATOR,
+                pystray.MenuItem(
+                    lambda text: (
+                        f"请求总数: {request_stats.get_stats()['total_requests']}"
+                        f"  |  平均耗时: {request_stats.get_stats()['overall']['avg']}ms"
+                    ),
+                    None,
+                    enabled=False,
+                ),
+                pystray.Menu.SEPARATOR,
                 pystray.MenuItem("退出程序", self._on_exit),
             )
 
@@ -408,7 +426,7 @@ class ServerManager:
         icon.run()
 
     def start_tray(self) -> threading.Thread:
-        """在后台线程启动系统托盘图标（用于 uvicorn --reload 模式）。"""
+        """后台线程启动系统托盘（uvicorn --reload 模式用）"""
         self._managed_by_uvicorn = True
         tray_thread = threading.Thread(target=self._setup_tray, daemon=True)
         tray_thread.start()
@@ -419,10 +437,7 @@ class ServerManager:
     # ================================================================
 
     def run(self) -> None:
-        """
-        直接启动服务器(python dataserver_v2.py 路径)
-        在守护线程中启动 uvicorn,主线程保持进程存活直到被中断
-        """
+        """直接启动服务器（python dataserver.py），守护线程跑 uvicorn"""
         if check_singleton(self.port):
             sys.exit(0)
         self._managed_by_uvicorn = False
@@ -442,7 +457,7 @@ class ServerManager:
 
 
 def check_singleton(port: int = 8353) -> bool:
-    """检查端口是否已被占用（防止重复启动）。"""
+    """检查端口是否已被占用"""
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(1)

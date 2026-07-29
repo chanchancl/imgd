@@ -1,18 +1,15 @@
 import shutil
 import subprocess
+import sys
 import traceback
 import zipfile
 from pathlib import Path
-from sys import argv
 
 from utils import Ask, ExitInSeconds
 
 
 def findRarFiles(directory: Path) -> list[Path]:
-    rarFiles = []
-    for f in directory.rglob("*.rar"):
-        rarFiles.append(f)
-    return sorted(rarFiles)
+    return sorted(directory.rglob("*.rar"))
 
 
 def extractRar(rarPath: Path, outputDir: Path) -> bool:
@@ -75,20 +72,20 @@ def convertRarToZip(rarPath: Path) -> Path | None:
 
 
 def main():
-    if len(argv) <= 1:
+    if len(sys.argv) <= 1:
         print("Please provide a directory path as input")
-        exit(0)
+        sys.exit(0)
 
-    inputDir = Path(argv[1])
+    inputDir = Path(sys.argv[1])
     if not inputDir.exists() or not inputDir.is_dir():
         print(f"Error: {inputDir} is not a valid directory")
-        exit(1)
+        sys.exit(1)
 
     rarFiles = findRarFiles(inputDir)
 
     if not rarFiles:
         print("No .rar files found.")
-        exit(0)
+        sys.exit(0)
 
     print(f"Found {len(rarFiles)} .rar file(s):")
     for f in rarFiles:
@@ -96,7 +93,7 @@ def main():
 
     if not Ask("Convert these files to .zip format?"):
         print("Aborted.")
-        exit(0)
+        sys.exit(0)
 
     for rarPath in rarFiles:
         print(f"Converting: {rarPath}")

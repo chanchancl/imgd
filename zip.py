@@ -1,11 +1,12 @@
 
 import os
-import zipfile
+import sys
 import traceback
+import zipfile
 from pathlib import Path
-from sys import argv
 
 from utils import ExitInSeconds
+
 
 # p ： 一个文件夹
 # 将文件夹p压缩为 zip 压缩包
@@ -47,11 +48,11 @@ def extract(p: Path) -> Path:
 
 
 def main():
-    if len(argv) <= 1:
+    if len(sys.argv) <= 1:
         print("Please take parameters as input")
-        exit(0)
+        sys.exit(0)
 
-    inputPaths = [Path(x) for x in argv[1:]]
+    inputPaths = [Path(x) for x in sys.argv[1:]]
     inputPaths.sort(key=lambda x: x.stat().st_mtime)
 
     for path in inputPaths:
@@ -69,6 +70,6 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except Exception:
+    except Exception:  # noqa: BLE001
         print(traceback.format_exc())
     ExitInSeconds(10)

@@ -7,14 +7,15 @@ import threading
 from pathlib import Path
 
 from autoclassfiy import FindArtistV2
-from config import JUST_LOAD, SearchPathDir
+from config import ManagedDir
 from pkg.constants import (
     CACHE_PATH,
     CACHE_REFRESH_INTERVAL_SECONDS,
     ENABLE_TRIGRAM_INDEX,
+    JUST_LOAD,
+    extra_search_dirs,
     logger,
     now_cst,
-    searchPath,
 )
 from pkg.models import CacheSnapshot, TitlesCache
 
@@ -24,15 +25,7 @@ from pkg.models import CacheSnapshot, TitlesCache
 
 
 def _extract_ngrams(s: str, n: int = 3) -> set[str]:
-    """提取字符串 s 中所有连续的 n 字符序列 (n-gram)。
-
-    Args:
-        s: 输入字符串
-        n: n-gram 的长度，默认 3 trigram
-
-    Returns:
-        n-gram 集合；若 s 长度不足 n 则返回空集合
-    """
+    """提取字符串 s 中所有连续 n-gram，长度不足则返回空集合"""
     if len(s) < n:
         return set()
     return {s[i : i + n] for i in range(len(s) - n + 1)}
@@ -44,15 +37,7 @@ def _extract_ngrams(s: str, n: int = 3) -> set[str]:
 
 
 def _build_ngram_index(titles: list[str], n: int = 3) -> dict[str, frozenset[int]]:
-    """构建 n-gram 索引：将每个 n-gram 映射到包含它的标题索引集合。
-
-    Args:
-        titles: 标题列表
-        n: n-gram 长度，默认 3 (trigram)
-
-    Returns:
-        gram -> frozenset of title indices
-    """
+    """构建 n-gram → frozenset[标题索引] 的倒排索引"""
     gram_to_indices: dict[str, set[int]] = {}
 
     for idx, title in enumerate(titles):
@@ -74,7 +59,7 @@ def _build_ngram_index(titles: list[str], n: int = 3) -> dict[str, frozenset[int
 def _collect_cleaned_titles_from_filesystem() -> list[str]:
     """从文件系统收集所有清理后的标题"""
     names_set = set()
-    root_path = SearchPathDir
+    root_path = ManagedDir
 
     if not os.path.exists(root_path):
         return []
@@ -87,7 +72,7 @@ def _collect_cleaned_titles_from_filesystem() -> list[str]:
                 names_set.add(os.path.splitext(filename)[0])
 
     # 从搜索路径收集
-    for search_dir in searchPath:
+    for search_dir in extra_search_dirs:
         for entry in os.scandir(search_dir):
             if entry.is_file() and entry.name.endswith(".zip"):
                 names_set.add(os.path.splitext(entry.name)[0])
@@ -102,9 +87,7 @@ def _collect_cleaned_titles_from_filesystem() -> list[str]:
 
 
 class CacheStore:
-    """
-    线程安全的缓存状态管理器。
-    """
+    """线程安全的缓存状态管理器。"""
 
     def __init__(self):
         self.lock = threading.Lock()
@@ -123,10 +106,7 @@ class CacheStore:
         )
 
     def get_snapshot(self) -> CacheSnapshot:
-        """获取当前缓存的一致性快照，无需加锁。
-
-        返回 CacheSnapshot 结构体，通过命名属性访问各字段。
-        """
+        """获取缓存一致性快照，无需加锁。"""
         return self._snapshot
 
     # ================================================================
@@ -134,6 +114,7 @@ class CacheStore:
     # ================================================================
 
     def _update(self, cleaned_titles: list[str]) -> None:
+        # JUST_LOAD: 新收集的标题合并到已有缓存，而非替换
         if JUST_LOAD:
             existing = list(self.titles)
             merged = existing + cleaned_titles
@@ -141,6 +122,7 @@ class CacheStore:
             merged = cleaned_titles
 
         new_titles = [x.strip() for x in merged if not x.startswith("_")]
+        # 去重 + 逆序排列（长的在前）
         new_titles = sorted(set(new_titles), reverse=True)
 
         if ENABLE_TRIGRAM_INDEX:
@@ -176,7 +158,7 @@ class CacheStore:
     # ================================================================
 
     async def refresh_loop(self) -> None:
-        """后台循环：每隔 CACHE_REFRESH_INTERVAL_SECONDS 刷新一次缓存。"""
+        """后台循环：每 CACHE_REFRESH_INTERVAL_SECONDS 刷新缓存"""
         while True:
             logger.info("Waiting for 12 hours to refresh cleaned title cache...")
             await asyncio.sleep(CACHE_REFRESH_INTERVAL_SECONDS)
@@ -185,7 +167,8 @@ class CacheStore:
             logger.info(f"Cleaned title cache refreshed, len: {len(self.titles)}")
 
     def load_from_file(self, cache_file_path: Path) -> bool:
-        """尝试从 JSON 文件加载有效缓存。成功返回 True。"""
+        """从 JSON 文件加载有效缓存，成功返回 True"""
+        # 文件不存在或内容极少（如空 JSON {}）则跳过
         if not cache_file_path.exists() or cache_file_path.stat().st_size <= 10:
             return False
 
@@ -206,14 +189,10 @@ class CacheStore:
             return False
 
     async def load_or_create(self, create_cache: bool = False) -> TitlesCache | None:
-        """加载或创建名称缓存。
-
-        Args:
-            create_cache: 是否强制重新创建缓存
-        """
+        """加载或重新创建标题缓存"""
         cache_file_path = Path(CACHE_PATH)
 
-        # 尝试加载现有缓存
+        # 非强制刷新 + 已有有效缓存文件 + 非 JUST_LOAD → 直接用
         if not create_cache and self.load_from_file(cache_file_path) and not JUST_LOAD:
             return None
 

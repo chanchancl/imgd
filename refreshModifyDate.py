@@ -1,8 +1,8 @@
+import sys
 import traceback
 from os import utime
 from pathlib import Path
 from pprint import pprint
-from sys import argv
 from time import sleep, time
 
 fileNameTemplate = "{0:04}"
@@ -17,11 +17,11 @@ def RefreshFolder(inputPaths: list[Path]):
 
 
 def main():
-    if len(argv) <= 1:
+    if len(sys.argv) <= 1:
         print("Please take parameters as input")
-        exit(0)
+        sys.exit(0)
 
-    inputPaths = [Path(x) for x in argv[1:]]
+    inputPaths = [Path(x) for x in sys.argv[1:]]
     inputPaths = sorted(inputPaths)
     pprint(inputPaths)
 

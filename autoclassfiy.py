@@ -7,10 +7,10 @@ from functools import lru_cache
 from pathlib import Path
 from re import search
 
-from config import ArtistAlias, IgnoredArtist, SearchPathDir
+from config import ArtistAlias, IgnoredArtist, ManagedDir
 from utils import Ask, ExitInSeconds, NewFileLogger
 
-ROOT_PATH = SearchPathDir
+ROOT_PATH = ManagedDir
 
 
 cachedir = None
@@ -52,7 +52,7 @@ def OrganizeFilesByFolder(target2Src: dict[Path, list[Path]]):
 
     print("\n" + "*" * 79 + "\n")
     for src, dst in faileds:
-        print(f"  {src.name}  ->  {dst}")
+        print(f"Move {src.name}\n  ->\n{dst}")
     if Ask("Above files exist in target, overwrite? (Y/n)"):
         for src, dst in faileds:
             target_file = dst / src.name
@@ -151,8 +151,7 @@ def FindSaveFolder(artist: str) -> Path | None:
     artist = MergeAlias(artist)
 
     for dir_name in cachedir:
-        # 精确匹配 "artist" 或 "artist (xxx)" 格式，避免 "abc" 误匹配 "abcdef"
-        if dir_name == artist or dir_name.startswith(artist + " ("):
+        if dir_name.startswith(artist):
             return Path(ROOT_PATH) / dir_name
     return None
 
@@ -190,7 +189,6 @@ def main():
     inputPaths = sorted(inputPaths)
 
     path2Artist = {raw: artist for raw in inputPaths if (artist := FindArtistV2(raw))}
-
     saveFolder, new_folders = SplitBySaveFolder(path2Artist)
 
     OrganizeFilesByFolder(saveFolder)
