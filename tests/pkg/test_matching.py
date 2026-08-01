@@ -292,7 +292,7 @@ class TestUnionIndex:
 
     def test_exceeds_max(self):
         idx = {"a": frozenset({0, 1, 2})}
-        assert _union_index(idx, {"a"}, 2) is None
+        assert _union_index(idx, {"a"}, 2) == None
 
     def test_all_missing(self):
         idx = {"x": frozenset({0})}

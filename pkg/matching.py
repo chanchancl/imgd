@@ -174,9 +174,9 @@ def _ngram_index(
 
 
 def _intersect_index(
-    index: dict[str, frozenset[int]], grams: set[str]
+    index: dict[str, frozenset[int]], grams: list[str]
 ) -> frozenset[int]:
-    """对全部 gram 的索引集合取交集，任一 gram 缺失则返回空"""
+    """对全部 gram 的索引集合取交集，任一 gram 缺失则返回空。grams 已按 posting list 大小升序排列"""
     if not grams:
         return frozenset()
     it = iter(grams)
@@ -194,9 +194,9 @@ def _intersect_index(
 
 
 def _union_index(
-    index: dict[str, frozenset[int]], grams: set[str], max_size: int
-) -> frozenset[int] | None:
-    """对全部 gram 的索引集合取并集，超 max_size 返回 None"""
+    index: dict[str, frozenset[int]], grams: list[str], max_size: int
+) -> frozenset[int]:
+    """对全部 gram 的索引集合取并集，超 max_size 返回已收集的部分结果。grams 已按 posting list 大小升序排列"""
     candidates: set[int] = set()
     for gram in grams:
         s = index.get(gram)
@@ -221,17 +221,20 @@ def exact_candidates(
     if not ENABLE_TRIGRAM_INDEX or input_grams is None:
         return snapshot.all_indices
 
+    # 根据 input_title 的长度选择 ngram
     index = _ngram_index(snapshot, input_title)
     if index is None:
         return snapshot.all_indices
 
-    return sorted(_intersect_index(index, input_grams))
+    # 按 posting list 大小升序排列，从最小集合开始求交
+    sorted_grams = sorted(input_grams, key=lambda g: len(index.get(g, frozenset())))
+    return sorted(_intersect_index(index, sorted_grams))
 
 
 def fuzzy_candidates(
     input_title: str, input_grams: set[str] | None = None
 ) -> list[int]:
-    """模糊候选：包含任一 n-gram 的标题索引，超半数回退全量扫描"""
+    """模糊候选：包含任一 n-gram 的标题索引"""
     snapshot = cache_store.get_snapshot()
 
     if not ENABLE_TRIGRAM_INDEX or input_grams is None:
@@ -240,9 +243,11 @@ def fuzzy_candidates(
     index = _ngram_index(snapshot, input_title)
     if index is None:
         return snapshot.all_indices
-    # 候选超过总数一半时不如直接全量扫描
+
+    # 按 posting list 大小升序排列，先处理稀有 gram
     half = len(snapshot.titles) // 2
-    result = _union_index(index, input_grams, half)
+    sorted_grams = sorted(input_grams, key=lambda g: len(index.get(g, frozenset())))
+    result = _union_index(index, sorted_grams, half)
     if result is None:
         return snapshot.all_indices
     return sorted(result)

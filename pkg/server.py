@@ -105,7 +105,8 @@ async def updateCacheMiddleware(req: Request, call_next):
                 )
                 await cache_store.load_or_create(create_cache=True)
                 # 清除 DCache，因为缓存数据已刷新
-                await memory_backend.close()
+                if memory_backend != None:
+                    await memory_backend.close()
 
     return await call_next(req)
 
