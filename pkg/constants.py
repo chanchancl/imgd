@@ -1,6 +1,7 @@
 """配置与常量 — 阈值、路径、match_status 枚举"""
 
 import datetime
+from pathlib import Path
 
 from cache_middleware.logger_config import logger as cm_logger
 
@@ -20,6 +21,9 @@ def now_cst() -> datetime.datetime:
     return datetime.datetime.now(tz=CST)
 
 
+# --- 项目根路径 ---
+_PROJECT_ROOT = Path(__file__).parent.parent
+
 # --- 搜索路径 ---
 from config import ExtraSearchDir
 
@@ -38,7 +42,7 @@ FUZZY_MATCH_THRESHOLD_SHORT = 0.8
 
 # --- 缓存设置 ---
 CACHE_MIN_REFRESH_INTERVAL_HOURS = 1  # 被动刷新：距上次查询超过 N 小时则触发
-CACHE_PATH = "cache/TitlesCache.json"
+CACHE_PATH = str(_PROJECT_ROOT / "cache/TitlesCache.json")
 CACHE_REFRESH_INTERVAL_SECONDS = 3600 * 12  # 后台主动刷新周期
 
 # --- 功能开关（从 config.py 导入，在此重新导出供其他模块使用）---

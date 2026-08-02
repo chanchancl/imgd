@@ -61,21 +61,28 @@ def _collect_cleaned_titles_from_filesystem() -> list[str]:
     names_set = set()
     root_path = ManagedDir
 
-    if not os.path.exists(root_path):
-        return []
+    if os.path.exists(root_path):
+        try:
+            for _, dirs, files in os.walk(root_path):
+                names_set.update(dirs)
 
-    for _, dirs, files in os.walk(root_path):
-        names_set.update(dirs)
-
-        for filename in files:
-            if filename.endswith((".zip", ".rar")):
-                names_set.add(os.path.splitext(filename)[0])
+                for filename in files:
+                    if filename.endswith((".zip", ".rar")):
+                        names_set.add(os.path.splitext(filename)[0])
+        except OSError as e:
+            logger.warning(f"Error walking ManagedDir '{root_path}': {e}")
 
     # 从搜索路径收集
     for search_dir in extra_search_dirs:
-        for entry in os.scandir(search_dir):
-            if entry.is_file() and entry.name.endswith(".zip"):
-                names_set.add(os.path.splitext(entry.name)[0])
+        if not os.path.isdir(search_dir):
+            logger.warning(f"Extra search dir not found, skipping: {search_dir}")
+            continue
+        try:
+            for entry in os.scandir(search_dir):
+                if entry.is_file() and entry.name.endswith(".zip"):
+                    names_set.add(os.path.splitext(entry.name)[0])
+        except OSError as e:
+            logger.warning(f"Error scanning search dir '{search_dir}': {e}")
 
     # 排序并返回列表（逆序）
     return sorted(names_set, reverse=True)
@@ -114,12 +121,13 @@ class CacheStore:
     # ================================================================
 
     def _update(self, cleaned_titles: list[str]) -> None:
-        # JUST_LOAD: 新收集的标题合并到已有缓存，而非替换
-        if JUST_LOAD:
-            existing = list(self.titles)
-            merged = existing + cleaned_titles
-        else:
-            merged = cleaned_titles
+        with self.lock:
+            # JUST_LOAD: 新收集的标题合并到已有缓存，而非替换
+            if JUST_LOAD:
+                existing = list(self.titles)
+                merged = existing + cleaned_titles
+            else:
+                merged = cleaned_titles
 
         new_titles = [x.strip() for x in merged if not x.startswith("_")]
         # 去重 + 逆序排列（长的在前）
@@ -163,13 +171,22 @@ class CacheStore:
             logger.info("Waiting for 12 hours to refresh cleaned title cache...")
             await asyncio.sleep(CACHE_REFRESH_INTERVAL_SECONDS)
             logger.info("Refresh cache every 12 hours")
-            await self.load_or_create(create_cache=True)
-            logger.info(f"Cleaned title cache refreshed, len: {len(self.titles)}")
+            try:
+                await self.load_or_create(create_cache=True)
+                logger.info(f"Cleaned title cache refreshed, len: {len(self.titles)}")
+            except Exception as e:  # noqa: BLE001 — 必须捕获所有异常防止循环退出
+                logger.error(
+                    f"Cache refresh loop failed, will retry in next cycle: {e}"
+                )
 
     def load_from_file(self, cache_file_path: Path) -> bool:
         """从 JSON 文件加载有效缓存，成功返回 True"""
         # 文件不存在或内容极少（如空 JSON {}）则跳过
-        if not cache_file_path.exists() or cache_file_path.stat().st_size <= 10:
+        try:
+            if not cache_file_path.exists() or cache_file_path.stat().st_size <= 10:
+                return False
+        except OSError as e:
+            logger.warning(f"Failed to stat cache file: {e}")
             return False
 
         try:
@@ -184,7 +201,13 @@ class CacheStore:
                 f"created at {cache.createTime}"
             )
             return True
-        except (json.JSONDecodeError, KeyError, ValueError) as e:
+        except (
+            json.JSONDecodeError,
+            KeyError,
+            ValueError,
+            TypeError,
+            AttributeError,
+        ) as e:
             logger.warning(f"Failed to load cache: {e}")
             return False
 

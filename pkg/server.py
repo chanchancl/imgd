@@ -1,27 +1,19 @@
-"""服务器 — FastAPI app、路由、中间件、ServerManager"""
+"""服务器 — FastAPI app、路由、中间件"""
 
 import asyncio
 import datetime
 import json
 import os
-import signal
-import socket
-import sys
-import threading
 import time
 import traceback
-import webbrowser
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-import pystray
-import uvicorn
 from cache_middleware import CacheMiddleware, MemoryBackend
 from cache_middleware import cache as DCache
-from fastapi import FastAPI, Request
+from fastapi import APIRouter, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
-from PIL import Image, ImageDraw
 
 from config import IgnoredNames
 from pkg.cache import cache_store
@@ -34,16 +26,32 @@ from pkg.constants import (
     logger,
     now_cst,
 )
+from pkg.models import (
+    AuthorsResponse,
+    BatchRequest,
+    ExtractAuthorRequest,
+    MatchAuthorRequest,
+    MatchTitleRequest,
+    QueryResponse,
+    RefreshCacheResponse,
+    RootResponse,
+    StatsResponse,
+    TitlesResponse,
+)
 from pkg.query import (
     extract_artist,
     process_batch_request,
     query_author,
     query_match_title,
 )
-from pkg.stats import RequestStatsCollector
+from pkg.server_manager import request_stats, server
 
-# --- 模块级单例 ---
-request_stats = RequestStatsCollector()
+# 预加载 admin 模板（避免端点中同步 I/O 阻塞事件循环）
+_TEMPLATE_DIR = Path(__file__).parent.parent / "templates"
+try:
+    _ADMIN_HTML = (_TEMPLATE_DIR / "admin.html").read_text(encoding="utf-8")
+except FileNotFoundError:
+    _ADMIN_HTML = None
 
 # ============================================================
 # FastAPI 应用与生命周期
@@ -55,17 +63,26 @@ async def lifespan(app: FastAPI):
     # start
     logger.debug(f"Managed by uvicorn: {os.environ.get('TRAY_ICON', '0') == '1'}")
     await cache_store.load_or_create()
-    asyncio.create_task(cache_store.refresh_loop())
+    refresh_task = asyncio.create_task(cache_store.refresh_loop())
 
     # running
     # handle request
     yield
 
-    logger.info("Shutdown")
+    # shutdown
+    logger.info("Shutting down background tasks...")
+    refresh_task.cancel()
+    try:
+        await refresh_task
+    except asyncio.CancelledError:
+        logger.info("Background refresh task cancelled")
+    logger.info("Shutdown complete")
 
 
 app = FastAPI(lifespan=lifespan)
+server.app = app  # 回填 app 引用到启动管理器
 
+memory_backend = None
 if ENABLE_DCACHE:
     memory_backend = MemoryBackend(max_size=1000)
     app.add_middleware(CacheMiddleware, backend=memory_backend)
@@ -75,7 +92,7 @@ if ENABLE_DCACHE:
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
     max_age=86400,
@@ -114,7 +131,6 @@ async def updateCacheMiddleware(req: Request, call_next):
 # 请求计时 + 统计
 @app.middleware("http")
 async def timeCostMiddleware(req: Request, call_next):
-    body = await req.json() if req.method in ("POST", "PUT", "PATCH") else None
     start = time.perf_counter()
     rsp = await call_next(req)
     elapsed = time.perf_counter() - start
@@ -128,134 +144,146 @@ async def timeCostMiddleware(req: Request, call_next):
     if (
         ENABLE_RECORD_BATCH_REQUEST
         and req.url.path.startswith("/query/batch")
-        and body is not None
         and elapsed_ms >= 150
     ):
-        record = {"req_body": json.dumps(body), "timeused": elapsed_ms}
-        with open("tmp/batch_record.json", "+a", encoding="utf-8") as fp:  # noqa: ASYNC230
-            json.dump(record, fp)
-            fp.write("\n")
+        try:
+            os.makedirs("tmp", exist_ok=True)
+            with open("tmp/batch_record.json", "+a", encoding="utf-8") as fp:  # noqa: ASYNC230
+                json.dump({"timeused": elapsed_ms}, fp)
+                fp.write("\n")
+        except OSError as e:
+            logger.warning(f"Failed to write batch record: {e}")
 
     return rsp
 
 
 # ============================================================
-# 辅助函数
+# 路由定义
 # ============================================================
 
 
-def make_response(match_status: int, match_title: str) -> JSONResponse:
-    return JSONResponse(content={"title": match_title, "match": match_status})
-
-
-# ============================================================
-# API 路由
-# ============================================================
-
-
-@app.get("/")
+# 根路由
+@app.get("/", response_model=RootResponse)
 @DCache(timeout=300)
 async def root_endpoint():
-    return JSONResponse(
-        content={
-            "message": "Hello, World! Cache created/refreshed with"
-            f" {len(cache_store.titles)} cleaned titles,"
-            f" authorCache length: {len(cache_store.authors)}"
-        }
-    )
+    snap = cache_store.get_snapshot()
+    return {
+        "message": "Hello, World! Cache created/refreshed with"
+        f" {len(snap.titles)} cleaned titles,"
+        f" authorCache length: {len(snap.authors)}"
+    }
 
 
-@app.post("/query/match-title")
+# --- /query ---
+query_router = APIRouter(prefix="/query", tags=["query"])
+
+
+@query_router.post("/match-title", response_model=QueryResponse)
 @DCache(timeout=300)
-async def match_title_endpoint(request: Request):
-    data: dict = await request.json()
-    in_author = data.get("author")
-    in_title: str = data.get("title")
-    if not in_title:
-        logger.debug("Query Title, no valid title found")
-        return make_response(MATCH_NO, "")
+async def match_title_endpoint(req: MatchTitleRequest):
+    in_title = req.title
+    in_author = req.author
 
     in_title = in_title.replace("?", "_")  # ? is invalid character in windows path
 
     for ignoreKeyword in IgnoredNames:
         if ignoreKeyword in in_title:
-            return make_response(MATCH_NO, "")
+            return {"title": "", "match": MATCH_NO}
 
     match_status, matched_title = await query_match_title(in_title, in_author)
     if match_status:
         logger.debug(f"Query Title, Found '{in_title}' and author '{in_author}', ")
-        return make_response(match_status, matched_title)
+        return {"title": matched_title, "match": match_status}
 
     logger.debug(f"Query Title, Not Found '{in_title}' and author '{in_author}'")
-    return make_response(match_status, "")
+    return {"title": "", "match": match_status}
 
 
-# 单次 HTTP 请求处理批量 query
-@app.post("/query/batch")
+@query_router.post("/batch")
 @DCache(timeout=300)
-async def batch_endpoint(request: Request):
-    data: dict = await request.json()
-    requests_list: list[dict] = data.get("requests")
-
-    if not requests_list:
-        return JSONResponse(
-            content={"error": "Missing or empty 'requests' field"}, status_code=422
-        )
-
+async def batch_endpoint(batch: BatchRequest):
     # 并发处理，return_exceptions=True 保证单个失败不影响其他任务
-    tasks = [process_batch_request(req) for req in requests_list]
+    tasks = [process_batch_request(req) for req in batch.requests]
     gathered = await asyncio.gather(*tasks, return_exceptions=True)
 
     results = []
     for i, result in enumerate(gathered):
+        req_type = batch.requests[i].type
         if isinstance(result, Exception):
             traceback.print_exception(result)
-            logger.error(
-                f"Batch request error for '{requests_list[i].get('type', '')}': {result}"
-            )
-            results.append(
-                {"type": requests_list[i].get("type", ""), "error": str(result)}
-            )
+            logger.error(f"Batch request error for '{req_type}': {result}")
+            results.append({"type": req_type, "error": str(result)})
         else:
             results.append(result)
 
     return JSONResponse(content={"results": results})
 
 
-@app.post("/query/match-author")
+@query_router.post("/match-author", response_model=QueryResponse)
 @DCache(timeout=300)
-async def match_author_endpoint(request: Request):
-    data: dict = await request.json()
-    author = data.get("author")
-
+async def match_author_endpoint(req: MatchAuthorRequest):
+    author = req.author
     match_status = await query_author(author)
     if match_status:
         logger.debug(f"Query Author, Found '{author}'")
-        return JSONResponse(content={"match": match_status})
+    else:
+        logger.debug(f"Query Author, Not Found : '{author}'")
+    return {"match": match_status}
 
-    logger.debug(f"Query Author, Not Found : '{author}'")
-    return JSONResponse(content={"match": match_status})
 
-
-@app.post("/query/extract-author")
+@query_router.post("/extract-author", response_model=QueryResponse)
 @DCache(timeout=300)
-async def extract_author_endpoint(request: Request):
-    data: dict = await request.json()
-    title = data.get("title")
+async def extract_author_endpoint(req: ExtractAuthorRequest):
+    title = req.title
     author = await extract_artist(title)
     match_status = MATCH_NO if author == "" else MATCH_EXACTLY
     logger.debug(f"Find artist for {title} : {author}")
-    return JSONResponse(content={"author": author, "match": match_status})
+    return {"author": author, "match": match_status}
 
 
-@app.post("/refresh-cache")
+# --- /api ---
+api_router = APIRouter(prefix="/api", tags=["api"])
+
+
+@api_router.get("/titles", response_model=TitlesResponse)
+@DCache(timeout=300)
+async def get_titles_list():
+    """获取所有清理后的标题列表"""
+    snap = cache_store.get_snapshot()
+    return {"titles": snap.titles, "count": len(snap.titles)}
+
+
+@api_router.get("/authors", response_model=AuthorsResponse)
+@DCache(timeout=300)
+async def get_authors_list():
+    """获取所有作者列表"""
+    snap = cache_store.get_snapshot()
+    return {"authors": snap.authors, "count": len(snap.authors)}
+
+
+@api_router.get("/stats", response_model=StatsResponse)
+async def get_stats():
+    """获取缓存统计信息与请求统计"""
+    snap = cache_store.get_snapshot()
+    stats_data = request_stats.get_stats()
+    return {
+        "cache_count": len(snap.titles),
+        "author_count": len(snap.authors),
+        "current_time": now_cst().strftime("%Y-%m-%d %H:%M:%S"),
+        "request_stats": stats_data,
+    }
+
+
+# --- /admin & 管理功能 ---
+admin_router = APIRouter(tags=["admin"])
+
+
+@admin_router.post("/refresh-cache", response_model=RefreshCacheResponse)
 async def refresh_cache_endpoint():
     """手动刷新缓存"""
     try:
         await cache_store.load_or_create(create_cache=True)
-        return JSONResponse(
-            content={"success": True, "message": "Cache refreshed successfully"}
-        )
+        return {"success": True, "message": "Cache refreshed successfully"}
     except (OSError, json.JSONDecodeError, KeyError, ValueError) as e:
         logger.error(f"Failed to refresh cache: {e}")
         return JSONResponse(
@@ -264,61 +292,16 @@ async def refresh_cache_endpoint():
         )
 
 
-@app.get("/api/titles")
-@DCache(timeout=300)
-async def get_titles_list():
-    """获取所有清理后的标题列表"""
-    return JSONResponse(
-        content={"titles": cache_store.titles, "count": len(cache_store.titles)}
-    )
-
-
-@app.get("/api/authors")
-@DCache(timeout=300)
-async def get_authors_list():
-    """获取所有作者列表"""
-    return JSONResponse(
-        content={"authors": cache_store.authors, "count": len(cache_store.authors)}
-    )
-
-
-@app.get("/api/stats")
-async def get_stats():
-    """获取缓存统计信息与请求统计"""
-    stats_data = request_stats.get_stats()
-    return JSONResponse(
-        content={
-            "cache_count": len(cache_store.titles),
-            "author_count": len(cache_store.authors),
-            "current_time": now_cst().strftime("%Y-%m-%d %H:%M:%S"),
-            "request_stats": stats_data,
-        }
-    )
-
-
-@app.get("/admin")
+@admin_router.get("/admin")
 @DCache(timeout=300)
 async def admin_dashboard():
     """管理仪表板页面"""
-    cache_count = len(cache_store.titles)
-    author_count = len(cache_store.authors)
+    snap = cache_store.get_snapshot()
+    cache_count = len(snap.titles)
+    author_count = len(snap.authors)
     current_time = now_cst().strftime("%Y-%m-%d %H:%M:%S")
 
-    # 注意：templates 目录在项目根目录，server.py 在 pkg/ 子目录下
-    template_path = Path(__file__).parent.parent / "templates/admin.html"
-    try:
-        with open(template_path, "r", encoding="utf-8") as f:  # noqa: ASYNC230
-            html_content = f.read()
-
-        # 替换模板变量
-        html_content = html_content.replace("{cache_count}", str(cache_count))
-        html_content = html_content.replace("{author_count}", str(author_count))
-        html_content = html_content.replace("{current_time}", current_time)
-
-        return HTMLResponse(content=html_content)
-    except FileNotFoundError:
-        logger.error(f"Template file not found: {template_path}")
-        # 返回一个简单的错误页面
+    if _ADMIN_HTML is None:
         return HTMLResponse(
             content=f"""
             <html><body>
@@ -326,154 +309,16 @@ async def admin_dashboard():
                 <p>Please create templates/admin.html</p>
                 <p>Cache stats: {cache_count} titles, {author_count} authors</p>
             </body></html>
-        """,
+            """,
             status_code=500,
         )
 
-
-# ============================================================
-# 服务器生命周期管理 — ServerManager
-# ============================================================
-
-
-class ServerManager:
-    """管理 FastAPI 服务器生命周期和系统托盘。"""
-
-    def __init__(self, app: FastAPI, host: str = "127.0.0.1", port: int = 8353):
-        self.app = app
-        self.host = host
-        self.port = port
-        self.loop = asyncio.new_event_loop()
-        self.uvicorn_server: uvicorn.Server | None = None
-        self._managed_by_uvicorn = False
-
-    # ================================================================
-    # 事件循环 / uvicorn
-    # ================================================================
-
-    def _serve(self) -> None:
-        """在事件循环中运行 uvicorn（阻塞调用线程）"""
-        config = uvicorn.Config(
-            self.app, host=self.host, port=self.port, log_level="info"
-        )
-        self.uvicorn_server = uvicorn.Server(config)
-        self.loop.run_until_complete(self.uvicorn_server.serve())
-
-    # ================================================================
-    # 托盘图标
-    # ================================================================
-
-    @staticmethod
-    def _create_tray_image() -> Image.Image:
-        """创建托盘图标（绿色背景 + 白字 S）"""
-        image = Image.new("RGB", (64, 64), color=(0, 100, 0))
-        dc: ImageDraw.ImageDraw = ImageDraw.Draw(image)
-        dc.text((32, 32), "S", fill=(255, 255, 255), font_size=48, anchor="mm")
-        return image
-
-    def _on_open_browser(self, icon, item) -> None:
-        webbrowser.open(f"http://{self.host}:{self.port}/admin")
-
-    def _on_refresh_cache(self, icon, item) -> None:
-        # 从托盘线程跨线程调度到事件循环执行
-        future = asyncio.run_coroutine_threadsafe(
-            cache_store.load_or_create(create_cache=True), self.loop
-        )
-
-        def on_cache_refreshed(f):
-            try:
-                f.result()
-                icon.update_menu()
-            except (asyncio.CancelledError, RuntimeError) as e:
-                logger.warning(f"Cache refresh callback error: {e}")
-
-        future.add_done_callback(on_cache_refreshed)
-
-    def _on_exit(self, icon, item) -> None:
-        icon.stop()
-        # uvicorn --reload 模式下需要 kill 父进程才能真正退出
-        if self._managed_by_uvicorn:
-            parent_pid = os.getppid()
-            os.kill(parent_pid, signal.SIGTERM)
-        self_pid = os.getpid()
-        os.kill(self_pid, signal.SIGTERM)
-
-    def _setup_tray(self) -> None:
-        image = self._create_tray_image()
-
-        def make_menu():
-            return pystray.Menu(
-                pystray.MenuItem(
-                    f"打开管理页面 (localhost:{self.port}/admin)", self._on_open_browser
-                ),
-                pystray.MenuItem(
-                    lambda text: f"立即刷新缓存 ({len(cache_store.titles)})",
-                    self._on_refresh_cache,
-                ),
-                pystray.Menu.SEPARATOR,
-                pystray.MenuItem(
-                    lambda text: (
-                        f"请求总数: {request_stats.get_stats()['total_requests']}"
-                        f"  |  平均耗时: {request_stats.get_stats()['overall']['avg']}ms"
-                    ),
-                    None,
-                    enabled=False,
-                ),
-                pystray.Menu.SEPARATOR,
-                pystray.MenuItem("退出程序", self._on_exit),
-            )
-
-        icon = pystray.Icon("dataserver", image, f"server ({self.port})", make_menu())
-        icon.run()
-
-    def start_tray(self) -> threading.Thread:
-        """后台线程启动系统托盘（uvicorn --reload 模式用）"""
-        self._managed_by_uvicorn = True
-        tray_thread = threading.Thread(target=self._setup_tray, daemon=True)
-        tray_thread.start()
-        return tray_thread
-
-    # ================================================================
-    # 启动入口
-    # ================================================================
-
-    def run(self) -> None:
-        """直接启动服务器（python dataserver.py），守护线程跑 uvicorn"""
-        if check_singleton(self.port):
-            sys.exit(0)
-        self._managed_by_uvicorn = False
-        server_thread = threading.Thread(target=self._serve, daemon=True)
-        server_thread.start()
-        try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            logger.info("Shutting down gracefully...")
-            sys.exit(0)
+    html = _ADMIN_HTML.replace("{cache_count}", str(cache_count))
+    html = html.replace("{author_count}", str(author_count))
+    html = html.replace("{current_time}", current_time)
+    return HTMLResponse(content=html)
 
 
-# ============================================================
-# 单例检测
-# ============================================================
-
-
-def check_singleton(port: int = 8353) -> bool:
-    """检查端口是否已被占用"""
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(1)
-        result = sock.connect_ex(("127.0.0.1", port))
-        sock.close()
-        if result == 0:
-            print("⚠️  Server already running on port 8353")
-            print("   Another instance of dataserver is already running.")
-            print("   Exiting this instance.")
-            return True
-    except (TimeoutError, OSError) as e:
-        print(f"⚠️  Port check error: {e}")
-        return False
-        # 继续运行，不因检测错误而退出
-
-
-# --- 模块级单例 ---
-server = ServerManager(app, host="127.0.0.1", port=8353)
+app.include_router(query_router)
+app.include_router(api_router)
+app.include_router(admin_router)

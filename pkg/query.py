@@ -21,10 +21,13 @@ from pkg.matching import (
     fuzzy_candidates,
     part_match,
 )
+from pkg.models import BatchRequestItem
 
 
 async def extract_artist(title: str) -> str:
     """提取标题中的作者名（线程池执行同步 FindArtistV2）"""
+    if not isinstance(title, str):
+        return ""
     return await asyncio.to_thread(FindArtistV2, title)
 
 
@@ -91,7 +94,7 @@ async def query_match_title(
 
 async def query_author(author: str) -> int:
     """作者查询：先 O(1) 集合精确匹配，再 O(n) 子串回退"""
-    if author == "":
+    if not isinstance(author, str) or author == "":
         return MATCH_NO
     lower_author = author.lower()
     snap = cache_store.get_snapshot()
@@ -104,24 +107,24 @@ async def query_author(author: str) -> int:
     return MATCH_NO
 
 
-async def process_batch_request(req: dict) -> dict:
+async def process_batch_request(req: BatchRequestItem) -> dict:
     """处理单个 batch 请求，按 type 字段分派到对应处理逻辑"""
-    req_type = req.get("type", "")
+    req_type = req.type
 
     if req_type == "extract-author":
-        title: str = req.get("title", "")
+        title = req.title
         author = await extract_artist(title)
         match_status = MATCH_NO if author == "" else MATCH_EXACTLY
         return {"type": req_type, "author": author, "match": match_status}
 
     elif req_type == "match-author":
-        author: str = req.get("author", "")
+        author = req.author
         match_status = await query_author(author)
         return {"type": req_type, "match": match_status}
 
     elif req_type == "match-title":
-        in_author = req.get("author", "")
-        in_title: str = req.get("title", "")
+        in_author = req.author
+        in_title = req.title
         if not in_title:
             return {"type": req_type, "title": "", "match": MATCH_NO}
 
@@ -141,8 +144,8 @@ async def process_batch_request(req: dict) -> dict:
     elif req_type == "extract-match-author-and-match-title":
         # 理论上这才是新加的API，上面三个都仅仅是旧API的 BATCH 版本
         # extract-verify-author + match-title
-        in_author = req.get("author", "").strip()
-        in_title: str = req.get("title", "").strip()
+        in_author = req.author.strip()
+        in_title = req.title.strip()
 
         # author 查询（允许空字符串，返回 MATCH_NO）
         out_author = await extract_artist(in_title)

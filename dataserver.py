@@ -7,7 +7,8 @@
 
 import os
 
-from pkg.server import app, server
+from pkg.server import app
+from pkg.server_manager import server
 
 _ = app
 

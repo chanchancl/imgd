@@ -1,9 +1,11 @@
-"""数据模型 — TitlesCache, CacheSnapshot"""
+"""数据模型 — TitlesCache, CacheSnapshot, BatchRequest"""
 
 import datetime
 import json
 from dataclasses import dataclass
 from pathlib import Path
+
+from pydantic import BaseModel
 
 from pkg.constants import JUST_LOAD, now_cst
 
@@ -54,3 +56,69 @@ class TitlesCache:
         if JUST_LOAD:
             return True
         return now_cst() - self.createTime < datetime.timedelta(days=max_age_days)
+
+
+# ============================================================
+# Pydantic 请求模型（FastAPI 自动校验）
+# ============================================================
+
+
+class BatchRequestItem(BaseModel):
+    type: str
+    title: str = ""
+    author: str = ""
+
+
+class BatchRequest(BaseModel):
+    requests: list[BatchRequestItem]
+
+
+class MatchTitleRequest(BaseModel):
+    title: str
+    author: str = ""
+
+
+class MatchAuthorRequest(BaseModel):
+    author: str
+
+
+class ExtractAuthorRequest(BaseModel):
+    title: str
+
+
+# ============================================================
+# Pydantic 响应模型（response_model，自动生成 OpenAPI schema）
+# ============================================================
+
+
+class QueryResponse(BaseModel):
+    """统一查询响应：各端点按需填写对应字段"""
+    match: int
+    title: str = ""
+    author: str = ""
+
+
+class RefreshCacheResponse(BaseModel):
+    success: bool
+    message: str
+
+
+class TitlesResponse(BaseModel):
+    titles: list[str]
+    count: int
+
+
+class AuthorsResponse(BaseModel):
+    authors: list[str]
+    count: int
+
+
+class StatsResponse(BaseModel):
+    cache_count: int
+    author_count: int
+    current_time: str
+    request_stats: dict
+
+
+class RootResponse(BaseModel):
+    message: str
