@@ -12,10 +12,6 @@ from pkg.constants import (
 )
 from pkg.models import TitlesCache
 
-# 注意：不在此处 import server，避免名称遮蔽 server 模块。
-# 请使用 from pkg.server import server 直接导入。
-
-
 __all__ = [
     "DEBUG",
     "ENABLE_TRIGRAM_INDEX",

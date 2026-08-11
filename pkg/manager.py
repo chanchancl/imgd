@@ -149,19 +149,15 @@ class ServerManager:
 
 def check_singleton(port: int = 8353) -> bool:
     """检查端口是否已被占用"""
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.settimeout(1)
-            result = sock.connect_ex(("127.0.0.1", port))
-            if result == 0:
-                print("⚠️  Server already running on port 8353")
-                print("   Another instance of dataserver is already running.")
-                print("   Exiting this instance.")
-                return True
-    except (TimeoutError, OSError) as e:
-        print(f"⚠️  Port check error: {e}")
-        return False
-        # 继续运行，不因检测错误而退出
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(1)
+        result = sock.connect_ex(("127.0.0.1", port))
+        if result == 0:
+            print("⚠️  Server already running on port 8353")
+            print("   Another instance of dataserver is already running.")
+            print("   Exiting this instance.")
+            return True
+    return False
 
 
 # --- 模块级单例 ---

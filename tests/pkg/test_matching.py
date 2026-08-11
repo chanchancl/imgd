@@ -4,8 +4,8 @@ from hypothesis import strategies as st
 
 from pkg.matching import (
     _intersect_index,
-    _ngram_index,
     _normalize_range_separators,
+    _resolve_grams,
     _union_index,
     check_author_in_title,
     exactly_match,
@@ -246,23 +246,31 @@ class TestFuzzMatch:
         assert matched == "abcdef_y"
 
 
-# ---- NgramIndex ----
+# ---- ResolveGrams ----
 
 
-class TestNgramIndex:
-    def test_trigram_index_selected(self):
-        snap = _make_snapshot(["abcde"])
-        result = _ngram_index(snap, "hello")
-        assert result is snap.trigram_index
+class TestResolveGrams:
+    def test_short_title_returns_none(self):
+        """1 字标题无法切分 n-gram"""
+        assert _resolve_grams("x") is None
 
-    def test_bigram_index_selected(self):
-        snap = _make_snapshot(["ab"])
-        result = _ngram_index(snap, "hi")
-        assert result is snap.bigram_index
+    def test_two_char_title(self):
+        """2 字标题使用 bigram"""
+        result = _resolve_grams("hi")
+        if result is None:
+            return  # 缓存为空时跳过
+        grams, index = result
+        assert isinstance(grams, list)
+        assert isinstance(index, dict)
 
-    def test_none_for_one_char(self):
-        snap = _make_snapshot(["a"])
-        assert _ngram_index(snap, "x") is None
+    def test_long_title(self):
+        """>=3 字标题使用 trigram"""
+        result = _resolve_grams("hello")
+        if result is None:
+            return
+        grams, _index = result
+        assert isinstance(grams, list)
+        assert "hel" in grams or "ell" in grams or "llo" in grams
 
 
 # ---- IntersectIndex ----

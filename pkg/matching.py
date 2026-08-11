@@ -4,7 +4,8 @@ import difflib
 import math
 import re
 
-from pkg.cache import cache_store
+from config import IgnoredNames
+from pkg.cache import _extract_ngrams, cache_store
 from pkg.constants import (
     ENABLE_TRIGRAM_INDEX,
     FUZZY_MATCH_LENGTH_THRESHOLD,
@@ -14,7 +15,6 @@ from pkg.constants import (
     PART_MATCH_THRESHOLD_DEFAULT,
     PART_MATCH_THRESHOLD_SHORT,
 )
-from pkg.models import CacheSnapshot
 
 # ============================================================
 # 辅助函数
@@ -38,6 +38,16 @@ def _normalize_range_separators(s: str) -> str:
 
 def check_author_in_title(title: str, author: str) -> bool:
     return author == "" or author in title
+
+
+def _sanitize_title(title: str) -> str:
+    """将标题中 '?' 替换为 '_'（'?' 是 Windows 非法路径字符）"""
+    return title.replace("?", "_")
+
+
+def is_title_ignored(title: str) -> bool:
+    """检查标题是否包含需忽略的关键词"""
+    return any(kw in title for kw in IgnoredNames)
 
 
 def extract_number_from_string(s: str) -> int | None:
@@ -159,18 +169,27 @@ def fuzz_match(
 # → 对查询词的 grams 在索引中取交集即可得到精确候选
 
 
-def _ngram_index(
-    snapshot: CacheSnapshot, input_title: str
-) -> dict[str, frozenset[int]] | None:
-    """根据标题长度选 trigram(>=3字) 或 bigram(2字) 索引"""
-    # title_len >= 2
-    title_len = len(input_title)
+def _resolve_grams(
+    input_title: str,
+) -> tuple[list[str], dict[str, frozenset[int]]] | None:
+    """计算标题 n-gram 并返回 (排序后的 gram 列表, 对应索引)。
 
+    无法使用索引时返回 None（ENABLE_TRIGRAM_INDEX=False 或标题太短）。
+    """
+    if not ENABLE_TRIGRAM_INDEX:
+        return None
+    title_len = len(input_title)
     if title_len >= 3:
-        return snapshot.trigram_index
-    if title_len == 2:
-        return snapshot.bigram_index
-    return None
+        n, index = 3, cache_store.get_snapshot().trigram_index
+    elif title_len == 2:
+        n, index = 2, cache_store.get_snapshot().bigram_index
+    else:
+        return None
+    grams = _extract_ngrams(input_title, n=n)
+    if not grams:
+        return None
+    sorted_grams = sorted(grams, key=lambda g: len(index.get(g, frozenset())))
+    return sorted_grams, index
 
 
 def _intersect_index(
@@ -212,42 +231,23 @@ def _union_index(
 # ============================================================
 
 
-def exact_candidates(
-    input_title: str, input_grams: set[str] | None = None
-) -> list[int]:
+def exact_candidates(input_title: str) -> list[int]:
     """精确候选：包含全部 n-gram 的标题索引，回退全量扫描"""
     snapshot = cache_store.get_snapshot()
-
-    if not ENABLE_TRIGRAM_INDEX or input_grams is None:
+    prepared = _resolve_grams(input_title)
+    if prepared is None:
         return snapshot.all_indices
-
-    # 根据 input_title 的长度选择 ngram
-    index = _ngram_index(snapshot, input_title)
-    if index is None:
-        return snapshot.all_indices
-
-    # 按 posting list 大小升序排列，从最小集合开始求交
-    sorted_grams = sorted(input_grams, key=lambda g: len(index.get(g, frozenset())))
-    return sorted(_intersect_index(index, sorted_grams))
+    grams, index = prepared
+    return sorted(_intersect_index(index, grams))
 
 
-def fuzzy_candidates(
-    input_title: str, input_grams: set[str] | None = None
-) -> list[int]:
+def fuzzy_candidates(input_title: str) -> list[int]:
     """模糊候选：包含任一 n-gram 的标题索引"""
     snapshot = cache_store.get_snapshot()
-
-    if not ENABLE_TRIGRAM_INDEX or input_grams is None:
+    prepared = _resolve_grams(input_title)
+    if prepared is None:
         return snapshot.all_indices
-
-    index = _ngram_index(snapshot, input_title)
-    if index is None:
-        return snapshot.all_indices
-
-    # 按 posting list 大小升序排列，先处理稀有 gram
+    grams, index = prepared
     half = len(snapshot.titles) // 2
-    sorted_grams = sorted(input_grams, key=lambda g: len(index.get(g, frozenset())))
-    result = _union_index(index, sorted_grams, half)
-    if result is None:
-        return snapshot.all_indices
-    return sorted(result)
+    result = _union_index(index, grams, half)
+    return snapshot.all_indices if result is None else sorted(result)

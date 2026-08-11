@@ -122,3 +122,35 @@ class StatsResponse(BaseModel):
 
 class RootResponse(BaseModel):
     message: str
+
+
+# ============================================================
+# Tab 状态模型（chrome-tab-separator → dataserver）
+# ============================================================
+
+
+class TabOpenItem(BaseModel):
+    """单个标签页打开/更新荷载"""
+    tab_id: int
+    title: str = ""
+    url: str = ""
+    window_id: int = 0
+
+
+class TabOpenBatchRequest(BaseModel):
+    """批量标签页打开/更新请求"""
+    tabs: list[TabOpenItem]
+
+
+class TabCloseBatchRequest(BaseModel):
+    """批量标签页关闭请求"""
+    tab_ids: list[int]
+
+
+class TabsActionResponse(BaseModel):
+    success: bool
+
+
+class OpenTitlesResponse(BaseModel):
+    titles: list[str]
+    count: int

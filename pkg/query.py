@@ -3,10 +3,8 @@
 import asyncio
 
 from autoclassfiy import FindArtistV2
-from config import IgnoredNames
-from pkg.cache import _extract_ngrams, cache_store
+from pkg.cache import cache_store
 from pkg.constants import (
-    ENABLE_TRIGRAM_INDEX,
     MATCH_EXACTLY,
     MATCH_FUZZY,
     MATCH_NO,
@@ -14,11 +12,13 @@ from pkg.constants import (
     logger,
 )
 from pkg.matching import (
+    _sanitize_title,
     check_author_in_title,
     exact_candidates,
     exactly_match,
     fuzz_match,
     fuzzy_candidates,
+    is_title_ignored,
     part_match,
 )
 from pkg.models import BatchRequestItem
@@ -40,25 +40,13 @@ async def query_match_title(
         return MATCH_NO, ""
 
     cached_titles = cache_store.get_snapshot().titles
-
     match_status = MATCH_NO
     matched_title = "<empty>"
-
     title_len = len(input_title)
-
-    # 预计算 n-gram：>=3 字 trigram，2 字 bigram
-    if ENABLE_TRIGRAM_INDEX:
-        if title_len >= 3:
-            input_grams = _extract_ngrams(input_title)
-        elif title_len == 2:
-            input_grams = _extract_ngrams(input_title, n=2)
-        else:
-            input_grams = None  # 1 字标题无法切分 n-gram
-    else:
-        input_grams = None
+    fuzz = None  # PART 阶段有条件赋值, FUZZY 阶段复用（避免 UnboundLocalError）
 
     # EXACT — 输入标题是缓存标题的子串
-    for idx in exact_candidates(input_title, input_grams):
+    for idx in exact_candidates(input_title):
         cached_title = cached_titles[idx]
         ok = exactly_match(cached_title, input_title)
         if ok and check_author_in_title(cached_title, input_author):
@@ -68,7 +56,7 @@ async def query_match_title(
 
     # PART — 公共子串 ≥ 阈值（2字标题跳过，等价于 exact）
     if not match_status and title_len != 2:
-        fuzz = fuzzy_candidates(input_title, input_grams)
+        fuzz = fuzzy_candidates(input_title)
         for idx in fuzz:
             cached_title = cached_titles[idx]
             ok, matched = part_match(cached_title, input_title)
@@ -82,7 +70,7 @@ async def query_match_title(
     if not match_status and title_len > 2:
         # fuzz 可能已从 PART 阶段的 fuzzy_candidates 获取，复用避免重复计算
         if fuzz is None:
-            fuzz = fuzzy_candidates(input_title, input_grams)
+            fuzz = fuzzy_candidates(input_title)
         candidate_titles = [cached_titles[i] for i in fuzz]
         ok, matched = fuzz_match(candidate_titles, input_title, input_author)
         if ok and check_author_in_title(matched, input_author):
@@ -128,11 +116,9 @@ async def process_batch_request(req: BatchRequestItem) -> dict:
         if not in_title:
             return {"type": req_type, "title": "", "match": MATCH_NO}
 
-        in_title = in_title.replace("?", "_")
-
-        for ignoreKeyword in IgnoredNames:
-            if ignoreKeyword in in_title:
-                return {"type": req_type, "title": "", "match": MATCH_NO}
+        in_title = _sanitize_title(in_title)
+        if is_title_ignored(in_title):
+            return {"type": req_type, "title": "", "match": MATCH_NO}
 
         match_status, matched_title = await query_match_title(in_title, in_author)
         return {
@@ -156,9 +142,8 @@ async def process_batch_request(req: BatchRequestItem) -> dict:
         if not in_title:
             title_match = MATCH_NO
         else:
-            in_title = in_title.replace("?", "_")
-            ignored = any(keyword in in_title for keyword in IgnoredNames)
-            if ignored:
+            in_title = _sanitize_title(in_title)
+            if is_title_ignored(in_title):
                 title_match = MATCH_NO
             else:
                 title_match, _ = await query_match_title(in_title, in_author)

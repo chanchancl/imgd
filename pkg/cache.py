@@ -129,24 +129,23 @@ class CacheStore:
             else:
                 merged = cleaned_titles
 
-        new_titles = [x.strip() for x in merged if not x.startswith("_")]
-        # 去重 + 逆序排列（长的在前）
-        new_titles = sorted(set(new_titles), reverse=True)
+            new_titles = [x.strip() for x in merged if not x.startswith("_")]
+            # 去重 + 逆序排列（长的在前）
+            new_titles = sorted(set(new_titles), reverse=True)
 
-        if ENABLE_TRIGRAM_INDEX:
-            new_trigram_index = _build_ngram_index(new_titles, n=3)
-            new_bigram_index = _build_ngram_index(new_titles, n=2)
-        else:
-            new_trigram_index = {}
-            new_bigram_index = {}
+            if ENABLE_TRIGRAM_INDEX:
+                new_trigram_index = _build_ngram_index(new_titles, n=3)
+                new_bigram_index = _build_ngram_index(new_titles, n=2)
+            else:
+                new_trigram_index = {}
+                new_bigram_index = {}
 
-        new_authors: list[str] = []
-        for title in new_titles:
-            author = FindArtistV2(title).strip().lower()
-            if author and author not in new_authors:
-                new_authors.append(author)
+            new_authors: list[str] = []
+            for title in new_titles:
+                author = FindArtistV2(title).strip().lower()
+                if author and author not in new_authors:
+                    new_authors.append(author)
 
-        with self.lock:
             self.titles = new_titles
             self.trigram_index = new_trigram_index
             self.bigram_index = new_bigram_index
